@@ -12,9 +12,13 @@ async function getStagehand() {
       projectId: process.env.BROWSERBASE_PROJECT_ID,
       browserbaseSessionID: sessionId,
       verbose: 1,
+      modelName: 'claude-opus-4-5',
+      modelClientOptions: {
+        apiKey: process.env.ANTHROPIC_API_KEY,
+      },
     });
 
-    await stagehand.init({ modelName: 'claude-opus-4-5' });
+    await stagehand.init();
     const page = stagehand.page;
     const url = page.url();
     const needsLogin = !url || url.includes('/login') || url === 'about:blank';
@@ -46,7 +50,6 @@ async function login(page) {
   await page.fill('input[type="password"]', process.env.READYMODE_PASSWORD);
   await page.click('input[type="submit"]');
 
-  // Handle "already logged in" popup — click Continue
   try {
     await page.waitForSelector('input[value="Continue"]', { timeout: 5000 });
     await page.click('input[value="Continue"]');
@@ -57,4 +60,4 @@ async function login(page) {
   console.log(`[Stagehand] Logged in — now at: ${page.url()}`);
 }
 
-module.exports = { getStagehand };
+module.exports
