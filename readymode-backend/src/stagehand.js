@@ -60,4 +60,4 @@ async function login(page) {
   console.log(`[Stagehand] Logged in — now at: ${page.url()}`);
 }
 
-module.exports
+module.exports = { getStagehand };
