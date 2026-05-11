@@ -12,11 +12,9 @@ async function getStagehand() {
       projectId: process.env.BROWSERBASE_PROJECT_ID,
       browserbaseSessionID: sessionId,
       verbose: 1,
-      llmClient: {
-        type: 'anthropic',
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        model: 'claude-opus-4-5',
-      },
+      enableCaching: false,
+      modelName: 'claude-opus-4-5',
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
     });
 
     await stagehand.init();
@@ -50,7 +48,6 @@ async function login(page) {
   await page.fill('#login-account', process.env.READYMODE_USERNAME);
   await page.fill('input[type="password"]', process.env.READYMODE_PASSWORD);
 
-  // Check "Sign in as Admin" checkbox
   try {
     await page.check('#login_as_admin');
     console.log('[Stagehand] Checked Sign in as Admin');
