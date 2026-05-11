@@ -21,7 +21,6 @@ async function setDialerSpeed({ member_name, speed }) {
       console.log(`[setDialerSpeed] Checking page ${pageNum}...`);
       await page.waitForTimeout(1500);
 
-      // Check if user is on this page
       const userRow = page.locator(`tr:has-text("${member_name}")`).first();
       const isVisible = await userRow.isVisible().catch(() => false);
 
@@ -29,24 +28,22 @@ async function setDialerSpeed({ member_name, speed }) {
         found = true;
         console.log(`[setDialerSpeed] Found ${member_name} on page ${pageNum}`);
 
-        // Scroll user into view
         await userRow.scrollIntoViewIfNeeded();
         await page.waitForTimeout(500);
 
-        // Hover over CPA value in that row
-        const cpaElement = userRow.locator('td').filter({ hasText: /^\d+ CPA$/ }).first();
-        await cpaElement.hover();
+        // Find the CPA anchor (dp_profile_anchor) inside this row
+        const cpaAnchor = userRow.locator('a.dp_profile_anchor').first();
+        await cpaAnchor.hover();
         await page.waitForTimeout(1000);
 
-        // Click the target speed
-        await page.click(`text=${speedNum} CPA`);
+        // The dropdown menu appears — click the item matching the speed
+        await page.click(`ul.dp_profile_menu li a:has-text("${speedNum} CPA")`);
         await page.waitForTimeout(2000);
+
       } else {
-        // Try next page
         pageNum++;
         const nextPage = page.locator(`li.page[onclick*="${pageNum}"]`).first();
         const nextExists = await nextPage.isVisible().catch(() => false);
-
         if (nextExists) {
           console.log(`[setDialerSpeed] Going to page ${pageNum}...`);
           await nextPage.click();
