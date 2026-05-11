@@ -39,12 +39,12 @@ async function getStagehand() {
 }
 
 async function login(page) {
-  const loginUrl = `${process.env.READYMODE_URL}/login`;
+  const loginUrl = `${process.env.READYMODE_URL}/login_new/`;
   console.log(`[Stagehand] Logging in at ${loginUrl}`);
   await page.goto(loginUrl, { waitUntil: 'networkidle' });
-  await page.fill('input[name="username"], input[name="user"], input[type="text"]', process.env.READYMODE_USERNAME);
+  await page.fill('#login-account', process.env.READYMODE_USERNAME);
   await page.fill('input[type="password"]', process.env.READYMODE_PASSWORD);
-  await page.click('button[type="submit"], button:has-text("Login"), button:has-text("Sign In")');
+  await page.click('button[type="submit"], input[type="submit"], button:has-text("Sign in"), button:has-text("Login")');
   await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 30000 });
   console.log(`[Stagehand] Logged in — now at: ${page.url()}`);
 }
