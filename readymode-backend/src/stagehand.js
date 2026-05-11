@@ -45,6 +45,14 @@ async function login(page) {
   await page.fill('#login-account', process.env.READYMODE_USERNAME);
   await page.fill('input[type="password"]', process.env.READYMODE_PASSWORD);
   await page.click('button[type="submit"], input[type="submit"], button:has-text("Sign in"), button:has-text("Login")');
+
+  // Handle "already logged in" popup — click Continue
+  try {
+    await page.waitForSelector('button:has-text("Continue")', { timeout: 5000 });
+    await page.click('button:has-text("Continue")');
+    console.log('[Stagehand] Clicked Continue on already-logged-in dialog');
+  } catch {}
+
   await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 30000 });
   console.log(`[Stagehand] Logged in — now at: ${page.url()}`);
 }
