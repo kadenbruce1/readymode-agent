@@ -11,10 +11,10 @@ async function getStagehand() {
       apiKey: process.env.BROWSERBASE_API_KEY,
       projectId: process.env.BROWSERBASE_PROJECT_ID,
       browserbaseSessionID: sessionId,
-      verbose: 0,
+      verbose: 1,
     });
 
-    await stagehand.init();
+    await stagehand.init({ modelName: 'claude-opus-4-5' });
     const page = stagehand.page;
     const url = page.url();
     const needsLogin = !url || url.includes('/login') || url === 'about:blank';
