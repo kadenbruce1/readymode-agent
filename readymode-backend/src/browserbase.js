@@ -1,4 +1,4 @@
-const { Browserbase } = require('@browserbasehq/sdk');
+const Browserbase = require('@browserbasehq/sdk').default || require('@browserbasehq/sdk');
 
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 let _sessionId = null;
@@ -6,8 +6,9 @@ let _sessionId = null;
 async function getSession() {
   if (_sessionId) {
     try {
-      const s = await bb.sessions.retrieve(_sessionId);
-      if (s.status === 'RUNNING') {
+      const sessions = await bb.listSessions();
+      const existing = sessions.find(s => s.id === _sessionId && s.status === 'RUNNING');
+      if (existing) {
         console.log(`[Browserbase] Reusing session: ${_sessionId}`);
         return _sessionId;
       }
@@ -16,11 +17,10 @@ async function getSession() {
   }
 
   console.log('[Browserbase] Creating new session...');
-  const s = await bb.sessions.create({
+  const session = await bb.createSession({
     projectId: process.env.BROWSERBASE_PROJECT_ID,
-    keepAlive: true,
   });
-  _sessionId = s.id;
+  _sessionId = session.id;
   console.log(`[Browserbase] Session created: ${_sessionId}`);
   return _sessionId;
 }
