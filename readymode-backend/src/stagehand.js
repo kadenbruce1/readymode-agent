@@ -12,9 +12,10 @@ async function getStagehand() {
       projectId: process.env.BROWSERBASE_PROJECT_ID,
       browserbaseSessionID: sessionId,
       verbose: 1,
-      modelName: 'claude-opus-4-5',
-      modelClientOptions: {
+      llmClient: {
+        type: 'anthropic',
         apiKey: process.env.ANTHROPIC_API_KEY,
+        model: 'claude-opus-4-5',
       },
     });
 
