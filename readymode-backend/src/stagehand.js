@@ -52,12 +52,11 @@ async function login(page) {
 
   // Check "Sign in as Admin" checkbox
   try {
-    const adminCheckbox = await page.$('input[name="login_as_admin"], #login_as_admin, input[type="checkbox"]');
-    if (adminCheckbox) {
-      await adminCheckbox.check();
-      console.log('[Stagehand] Checked Sign in as Admin');
-    }
-  } catch {}
+    await page.check('#login_as_admin');
+    console.log('[Stagehand] Checked Sign in as Admin');
+  } catch (e) {
+    console.log('[Stagehand] Could not check admin checkbox:', e.message);
+  }
 
   await page.click('input[type="submit"]');
 
