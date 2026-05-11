@@ -2,6 +2,9 @@ const { Stagehand } = require('@browserbasehq/stagehand');
 const { getSession, clearSession } = require('./browserbase');
 
 async function getStagehand() {
+  // Stagehand reads ANTHROPIC_API_KEY directly from process.env
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
   let sessionId = await getSession();
   let retried = false;
 
@@ -13,8 +16,7 @@ async function getStagehand() {
       browserbaseSessionID: sessionId,
       verbose: 1,
       enableCaching: false,
-      modelName: 'claude-opus-4-5',
-      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      modelName: 'claude-3-5-sonnet-20241022',
     });
 
     await stagehand.init();
