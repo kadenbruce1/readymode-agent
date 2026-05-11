@@ -1,7 +1,5 @@
 const { getStagehand } = require('../stagehand');
 
-// Uses pure Playwright — no Stagehand act() needed
-// SOP: View Main → Members tab → hover CPA value → select from dropdown
 async function setDialerSpeed({ member_name, speed }) {
   if (!member_name) throw new Error('member_name is required.');
   const speedNum = Number(speed);
@@ -9,34 +7,55 @@ async function setDialerSpeed({ member_name, speed }) {
 
   const { stagehand, page } = await getStagehand();
   try {
-    console.log('[setDialerSpeed] Navigating to View Main...');
-
     // Click View Main
     await page.click('text=View Main');
     await page.waitForTimeout(2000);
 
     // Click Members tab
-    await page.click('text=Members');
+    await page.click('#ui-id-3');
     await page.waitForTimeout(2000);
 
     console.log(`[setDialerSpeed] Looking for user: ${member_name}`);
 
-    // Find the user row containing their name
-    const userRow = await page.locator(`tr:has-text("${member_name}")`).first();
-    await userRow.waitFor({ timeout: 10000 });
+    let found = false;
 
-    // Find the CPA element in that row and hover over it
-    const cpaElement = await userRow.locator('text=/\\d+ CPA/').first();
-    await cpaElement.hover();
-    await page.waitForTimeout(1000);
+    // Loop through pages
+    while (!found) {
+      // Scroll through current page looking for user
+      for (let i = 0; i < 10; i++) {
+        const userRow = page.locator(`tr:has-text("${member_name}")`).first();
+        if (await userRow.isVisible()) {
+          found = true;
 
-    // Click the target speed from dropdown
-    await page.click(`text=${speedNum} CPA`);
-    await page.waitForTimeout(2000);
+          // Hover over their CPA value
+          const cpaElement = userRow.locator('td:has-text("CPA")').first();
+          await cpaElement.hover();
+          await page.waitForTimeout(1000);
 
-    console.log(`[setDialerSpeed] Speed set to ${speedNum} CPA`);
+          // Click the target speed from dropdown
+          await page.click(`text=${speedNum} CPA`);
+          await page.waitForTimeout(2000);
+          break;
+        }
+        await page.keyboard.press('PageDown');
+        await page.waitForTimeout(500);
+      }
+
+      if (found) break;
+
+      // Try to go to next page
+      const nextButton = page.locator('text=Next, a:has-text("Next"), button:has-text("Next"), [aria-label="Next page"]').first();
+      const nextVisible = await nextButton.isVisible().catch(() => false);
+      if (nextVisible) {
+        console.log('[setDialerSpeed] Going to next page...');
+        await nextButton.click();
+        await page.waitForTimeout(2000);
+      } else {
+        throw new Error(`User "${member_name}" not found in Members list`);
+      }
+    }
+
     const screenshot = await page.screenshot({ type: 'png' });
-
     return {
       message: `Dialer speed for *${member_name}* set to *${speedNum} CPA*.`,
       screenshot,
