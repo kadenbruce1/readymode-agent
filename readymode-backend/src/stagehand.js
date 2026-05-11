@@ -49,6 +49,16 @@ async function login(page) {
   await page.goto(loginUrl, { waitUntil: 'networkidle' });
   await page.fill('#login-account', process.env.READYMODE_USERNAME);
   await page.fill('input[type="password"]', process.env.READYMODE_PASSWORD);
+
+  // Check "Sign in as Admin" checkbox
+  try {
+    const adminCheckbox = await page.$('input[name="login_as_admin"], #login_as_admin, input[type="checkbox"]');
+    if (adminCheckbox) {
+      await adminCheckbox.check();
+      console.log('[Stagehand] Checked Sign in as Admin');
+    }
+  } catch {}
+
   await page.click('input[type="submit"]');
 
   try {
