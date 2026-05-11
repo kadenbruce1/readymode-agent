@@ -7,51 +7,53 @@ async function setDialerSpeed({ member_name, speed }) {
 
   const { stagehand, page } = await getStagehand();
   try {
-    // Click View Main
     await page.click('text=View Main');
     await page.waitForTimeout(2000);
-
-    // Click Members tab
     await page.click('#ui-id-3');
     await page.waitForTimeout(2000);
 
     console.log(`[setDialerSpeed] Looking for user: ${member_name}`);
 
     let found = false;
+    let pageNum = 1;
 
-    // Loop through pages
     while (!found) {
-      // Scroll through current page looking for user
-      for (let i = 0; i < 10; i++) {
-        const userRow = page.locator(`tr:has-text("${member_name}")`).first();
-        if (await userRow.isVisible()) {
-          found = true;
+      console.log(`[setDialerSpeed] Checking page ${pageNum}...`);
+      await page.waitForTimeout(1500);
 
-          // Hover over their CPA value
-          const cpaElement = userRow.locator('td:has-text("CPA")').first();
-          await cpaElement.hover();
-          await page.waitForTimeout(1000);
+      // Check if user is on this page
+      const userRow = page.locator(`tr:has-text("${member_name}")`).first();
+      const isVisible = await userRow.isVisible().catch(() => false);
 
-          // Click the target speed from dropdown
-          await page.click(`text=${speedNum} CPA`);
-          await page.waitForTimeout(2000);
-          break;
-        }
-        await page.keyboard.press('PageDown');
+      if (isVisible) {
+        found = true;
+        console.log(`[setDialerSpeed] Found ${member_name} on page ${pageNum}`);
+
+        // Scroll user into view
+        await userRow.scrollIntoViewIfNeeded();
         await page.waitForTimeout(500);
-      }
 
-      if (found) break;
+        // Hover over CPA value in that row
+        const cpaElement = userRow.locator('td').filter({ hasText: /^\d+ CPA$/ }).first();
+        await cpaElement.hover();
+        await page.waitForTimeout(1000);
 
-      // Try to go to next page
-      const nextButton = page.locator('text=Next, a:has-text("Next"), button:has-text("Next"), [aria-label="Next page"]').first();
-      const nextVisible = await nextButton.isVisible().catch(() => false);
-      if (nextVisible) {
-        console.log('[setDialerSpeed] Going to next page...');
-        await nextButton.click();
+        // Click the target speed
+        await page.click(`text=${speedNum} CPA`);
         await page.waitForTimeout(2000);
       } else {
-        throw new Error(`User "${member_name}" not found in Members list`);
+        // Try next page
+        pageNum++;
+        const nextPage = page.locator(`li.page[onclick*="${pageNum}"]`).first();
+        const nextExists = await nextPage.isVisible().catch(() => false);
+
+        if (nextExists) {
+          console.log(`[setDialerSpeed] Going to page ${pageNum}...`);
+          await nextPage.click();
+          await page.waitForTimeout(2000);
+        } else {
+          throw new Error(`User "${member_name}" not found in Members list`);
+        }
       }
     }
 
