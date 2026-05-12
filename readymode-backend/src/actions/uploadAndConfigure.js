@@ -85,6 +85,15 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     });
     allSelectOptions.forEach(o => console.log(`[uploadAndConfigure] ${o}`));
 
+    // Wait for campaign dropdown to load AND have options populated
+    console.log('[uploadAndConfigure] Waiting for campaign dropdown to populate...');
+    await page.waitForFunction(() => {
+      const select = document.querySelector('select[listof="campaigns"]');
+      return select && select.options.length > 1;
+    }, { timeout: 20000 });
+    await page.waitForTimeout(500);
+    console.log('[uploadAndConfigure] Campaign dropdown populated');
+
     const campaignSelected = await page.evaluate((name) => {
       // Target the campaign dropdown specifically by its listof attribute
       const select = document.querySelector('select[listof="campaigns"]');
