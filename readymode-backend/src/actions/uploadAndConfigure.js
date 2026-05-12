@@ -50,7 +50,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── INJECT FILE VIA CDP using exact ID ───────────────────────────────
+    // ── INJECT FILE VIA CDP ───────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Injecting file via CDP into #leadfileuploadbutton...');
     const { root } = await cdpSession.send('DOM.getDocument');
@@ -59,16 +59,22 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       selector: '#leadfileuploadbutton',
     });
 
-    if (nodeId) {
-      await cdpSession.send('DOM.setFileInputFiles', {
-        files: [tempPath],
-        nodeId,
-      });
-      console.log('[uploadAndConfigure] File injected via CDP');
-    } else {
-      throw new Error('Could not find #leadfileuploadbutton');
-    }
+    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton');
 
+    await cdpSession.send('DOM.setFileInputFiles', {
+      files: [tempPath],
+      nodeId,
+    });
+    console.log('[uploadAndConfigure] File injected via CDP');
+
+    // Fire change event to trigger Readymode's upload handler
+    await page.evaluate(() => {
+      const input = document.querySelector('#leadfileuploadbutton');
+      if (input) {
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        console.log('change event fired on #leadfileuploadbutton');
+      }
+    });
     await page.waitForTimeout(2000);
 
     // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
