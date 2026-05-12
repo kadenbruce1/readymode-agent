@@ -1,4 +1,5 @@
 const { getStagehand } = require('../stagehand');
+const { getSession } = require('../browserbase');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -12,89 +13,115 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   const tempPath = path.join(os.tmpdir(), `leads-${Date.now()}.csv`);
   await downloadFile(file_url, tempPath);
 
+  // Read the CSV as base64 so we can inject it via CDP
+  const fileBuffer = fs.readFileSync(tempPath);
+  const fileBase64 = fileBuffer.toString('base64');
+  const fileName = path.basename(tempPath);
+
   const { stagehand, page } = await getStagehand();
+
+  // Get CDP session for direct browser control
+  const cdpSession = await page.context().newCDPSession(page);
+
   try {
 
-    // ── PART 1: UPLOAD LEADS ─────────────────────────────────────────────
+    // Register dialog handler FIRST
+    page.on('dialog', async dialog => {
+      console.log(`[uploadAndConfigure] Dialog accepted: ${dialog.message()}`);
+      await dialog.accept();
+    });
+
+    // ── NAVIGATE TO LEADS ────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Going to dashboard...');
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Click Leads via JS
-    console.log('[uploadAndConfigure] Clicking Leads via JS...');
+    // Load Leads tab via Readymode's own JS function
+    console.log('[uploadAndConfigure] Loading Leads tab via JS...');
     await page.evaluate(() => {
-      const links = document.querySelectorAll('a.dash_link');
-      for (const link of links) {
-        if (link.getAttribute('href') === '-AI Leads/pools') {
-          link.click();
-          break;
-        }
-      }
+      tmp.UITab_LoadDynTab('AI Leads/pools', 'xcont-14');
     });
     await page.waitForTimeout(3000);
 
-    // Click Upload Leads via JS
-    console.log('[uploadAndConfigure] Clicking Upload Leads...');
-    await page.evaluate(() => {
-      const upload = document.querySelector('a.uploadlink');
-      if (upload) upload.click();
-    });
-    await page.waitForTimeout(2000);
+    // ── INJECT FILE VIA CDP ──────────────────────────────────────────────
 
-    // Set file directly on any hidden file input without triggering file chooser
-    console.log('[uploadAndConfigure] Setting file on input...');
-    const fileInputs = await page.$$('input[type="file"]');
-    if (fileInputs.length > 0) {
-      for (const input of fileInputs) {
-        try {
-          await input.setInputFiles(tempPath);
-          console.log('[uploadAndConfigure] File set on input');
-          break;
-        } catch (e) {
-          console.log('[uploadAndConfigure] Could not set file on input:', e.message);
-        }
-      }
+    console.log('[uploadAndConfigure] Finding file input via CDP...');
+
+    // Get the file input node using CDP DOM
+    const { root } = await cdpSession.send('DOM.getDocument');
+    const { nodeId: fileInputNodeId } = await cdpSession.send('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: 'input[type="file"]',
+    });
+
+    if (fileInputNodeId) {
+      // Use CDP to set the file directly on the input
+      await cdpSession.send('DOM.setFileInputFiles', {
+        files: [tempPath],
+        nodeId: fileInputNodeId,
+      });
+      console.log('[uploadAndConfigure] File injected via CDP');
+    } else {
+      // Fallback — make input visible and set via Playwright
+      await page.evaluate(() => {
+        document.querySelectorAll('input[type="file"]').forEach(i => {
+          i.style.cssText = 'display:block!important;visibility:visible!important;opacity:1!important;position:fixed!important;top:0!important;left:0!important;';
+        });
+      });
+      await page.waitForTimeout(500);
+      await page.locator('input[type="file"]').first().setInputFiles(tempPath);
+      console.log('[uploadAndConfigure] File set via fallback');
     }
+
     await page.waitForTimeout(2000);
 
-    // Handle native browser dialog (confirm upload)
-    page.on('dialog', async dialog => {
-      console.log('[uploadAndConfigure] Dialog:', dialog.message());
-      await dialog.accept();
-    });
-    await page.waitForTimeout(1000);
+    // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
 
-    // Also try clicking OK if custom dialog
-    try {
-      const okBtn = await page.$('button:has-text("OK")');
-      if (okBtn) {
-        await okBtn.click();
-        console.log('[uploadAndConfigure] Clicked OK button');
-      }
-      await page.waitForTimeout(2000);
-    } catch {}
-
-    // Wait for field mapping screen
     console.log('[uploadAndConfigure] Waiting for field mapping screen...');
-    await page.waitForTimeout(3000);
+    await page.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
+    console.log('[uploadAndConfigure] Field mapping screen loaded!');
 
-    // Set campaign from the dropdown on the right side
-    console.log(`[uploadAndConfigure] Setting campaign: ${campaign_name}`);
+    // ── SELECT CAMPAIGN ──────────────────────────────────────────────────
+
+    console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
     if (create_new_campaign) {
-      // Click Add a New Campaign
-      await page.click('text=Add a New Campaign');
-      await page.waitForTimeout(1000);
-      await page.fill('input[type="text"]:visible', campaign_name);
-      await page.waitForTimeout(500);
-      await page.click('button:has-text("OK"), input[value="OK"]');
-      await page.waitForTimeout(1000);
+      // Click Add a New Campaign link
+      const addLink = await page.$('text=Add a New Campaign');
+      if (addLink) {
+        await addLink.click();
+        await page.waitForTimeout(1000);
+        await page.fill('input[type="text"]:visible', campaign_name);
+        await page.waitForTimeout(500);
+        await page.click('button:has-text("OK"), input[value="OK"]');
+        await page.waitForTimeout(1500);
+      }
     } else {
-      // Scan all select elements for matching campaign
+      // Use CDP to find and set the campaign select
       const matched = await page.evaluate((name) => {
-        const selects = document.querySelectorAll('select');
-        for (const select of selects) {
+        // Try the named campaign select first
+        const campaignSelect = document.querySelector('select[name="set[campaignId]"], select[listof="campaigns"]');
+        if (campaignSelect) {
+          const options = Array.from(campaignSelect.options);
+          const match = options.find(o =>
+            o.text.toLowerCase().includes(name.toLowerCase()) ||
+            name.toLowerCase().includes(o.text.toLowerCase())
+          );
+          if (match) {
+            campaignSelect.value = match.value;
+            campaignSelect.dispatchEvent(new Event('change', { bubbles: true }));
+            // Also call Readymode's check function if available
+            if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+              tmp.CCS_Leads_CheckCampaign(campaignSelect);
+            }
+            return match.text;
+          }
+        }
+
+        // Fallback — search all selects
+        const allSelects = document.querySelectorAll('select');
+        for (const select of allSelects) {
           const options = Array.from(select.options);
           const match = options.find(o =>
             o.text.toLowerCase().includes(name.toLowerCase()) ||
@@ -109,17 +136,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
         return null;
       }, campaign_name);
 
-      if (matched) {
-        console.log(`[uploadAndConfigure] Selected campaign: ${matched}`);
-      } else {
-        console.log(`[uploadAndConfigure] Campaign not found in dropdowns — proceeding`);
-      }
+      console.log(`[uploadAndConfigure] Campaign selected: ${matched || 'not found'}`);
       await page.waitForTimeout(1000);
     }
 
-    // Click Done - Import leads
+    // ── IMPORT LEADS ─────────────────────────────────────────────────────
+
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await page.click('input[value="Done - Import leads"], button:has-text("Done - Import leads")');
+    await page.click('input[value="Done - Import leads"]');
     await page.waitForTimeout(5000);
 
     // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
@@ -136,8 +160,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // Phone Groups → Check All
     console.log('[uploadAndConfigure] Assigning phone groups...');
-    const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
-    await phoneGroupBtn.click();
+    await page.locator('button.ui-multiselect').nth(0).click();
     await page.waitForTimeout(1000);
     await page.click('a.ui-multiselect-all');
     await page.waitForTimeout(500);
@@ -146,8 +169,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // Call Results → Check All → Uncheck 4
     console.log('[uploadAndConfigure] Configuring call results...');
-    const callResultBtn = page.locator('button.ui-multiselect').nth(1);
-    await callResultBtn.click();
+    await page.locator('button.ui-multiselect').nth(1).click();
     await page.waitForTimeout(1000);
     await page.click('a.ui-multiselect-all');
     await page.waitForTimeout(500);
@@ -156,8 +178,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     for (const item of excluded) {
       try {
         const label = page.locator(`label:has-text("${item}")`).first();
-        const checkbox = label.locator('input[type="checkbox"]');
-        const isChecked = await checkbox.isChecked().catch(() => false);
+        const isChecked = await label.locator('input[type="checkbox"]').isChecked().catch(() => false);
         if (isChecked) {
           await label.click();
           await page.waitForTimeout(300);
@@ -181,6 +202,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     };
 
   } finally {
+    await cdpSession.detach().catch(() => {});
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
