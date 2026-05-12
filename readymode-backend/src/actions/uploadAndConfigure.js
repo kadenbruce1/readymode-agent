@@ -61,39 +61,20 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     await fileChooser.setFiles(tempPath);
     console.log('[uploadAndConfigure] File attached');
 
-    // After file attach, the form needs to be submitted to load the confirmation screen
-    // Wait a moment for the file to be registered then submit
-    await page.waitForTimeout(2000);
-    console.log('[uploadAndConfigure] Submitting upload form...');
-    await page.evaluate(() => {
-      const form = document.querySelector('#leadsendform');
-      if (form) form.submit();
-    });
-    await page.waitForTimeout(3000);
-
     // ── WAIT FOR UPLOAD CONFIRMATION SCREEN ──────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for upload confirmation screen...');
-    // The h1 "Lead upload confirmation" is display:none — wait for the form instead
-    await page.waitForSelector('#leadsendform', { state: 'attached', timeout: 90000 });
+    // Wait for the campaign select to be populated (confirms confirmation screen is ready)
+    await page.waitForFunction(() => {
+      const s = document.querySelector('select[listof="campaigns"]');
+      return s && s.options.length > 1;
+    }, { timeout: 60000 });
     console.log('[uploadAndConfigure] Confirmation screen loaded');
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(500);
 
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
-
-    // Wait flat 5s for the confirmation page JS to populate the campaign dropdown
-    console.log('[uploadAndConfigure] Waiting 5s for campaign dropdown to populate...');
-    await page.waitForTimeout(5000);
-
-    // Log what's in the dropdown for debugging
-    const dropdownState = await page.evaluate(() => {
-      const s = document.querySelector('select[listof="campaigns"]');
-      if (!s) return 'NOT FOUND';
-      return `options: ${s.options.length} | values: ${Array.from(s.options).map(o => o.text.trim()).join(' | ')}`;
-    });
-    console.log(`[uploadAndConfigure] Dropdown state: ${dropdownState}`);
 
     const campaignSelected = await page.evaluate((name) => {
       const select = document.querySelector('select[listof="campaigns"]');
