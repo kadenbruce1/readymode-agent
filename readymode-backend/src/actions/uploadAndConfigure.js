@@ -2,12 +2,14 @@ const { getStagehand } = require('../stagehand');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const FormData = require('form-data');
 const axios = require('axios');
+const express = require('express');
 
 async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
   if (!campaign_name) throw new Error('campaign_name is required.');
   if (!file_url) throw new Error('file_url is required.');
+
+  // ── DOWNLOAD FILE FROM SLACK ──────────────────────────────────────────
 
   const tempPath = path.join(os.tmpdir(), `leads-${Date.now()}.csv`);
   await downloadFile(file_url, tempPath);
@@ -16,296 +18,154 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   console.log(`[uploadAndConfigure] Downloaded file size: ${fileSize} bytes`);
   if (fileSize < 100) throw new Error(`Downloaded file too small (${fileSize} bytes)`);
 
+  // ── SERVE FILE LOCALLY SO BROWSERBASE CAN FETCH IT ───────────────────
+
+  // Browserbase can't access Render's filesystem directly.
+  // Serve the CSV on a local port so the browser can fetch it via HTTP.
+  const fileToken = `file-${Date.now()}`;
+  const servePort = 10001;
+  const app = express();
+  app.get(`/${fileToken}`, (req, res) => {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.sendFile(tempPath);
+  });
+  const server = app.listen(servePort);
+  console.log(`[uploadAndConfigure] Serving file at http://localhost:${servePort}/${fileToken}`);
+
   const { stagehand, page } = await getStagehand();
 
   try {
 
-    // ── GET SESSION COOKIES ───────────────────────────────────────────────
+    // ── NAVIGATE TO READYMODE ─────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Getting session cookies...');
+    console.log('[uploadAndConfigure] Navigating to Readymode...');
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
 
-    const cookies = await page.context().cookies();
-    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    console.log(`[uploadAndConfigure] Got ${cookies.length} cookies`);
+    // ── OPEN LEAD MANAGEMENT PANEL ────────────────────────────────────────
 
-    const baseUrl = process.env.READYMODE_URL;
-
-    // ── POST CSV DIRECTLY TO UPLOAD API ──────────────────────────────────
-
-    console.log('[uploadAndConfigure] Uploading CSV via API...');
-    const form = new FormData();
-    form.append('fromContainerId', 'xcont-5');
-    form.append('leadfile', fs.createReadStream(tempPath), {
-      filename: path.basename(tempPath),
-      contentType: 'text/csv',
-    });
-
-    const uploadResponse = await axios.post(
-      `${baseUrl}/AI%20Leads/upload/index.php`,
-      form,
-      {
-        headers: {
-          ...form.getHeaders(),
-          'Cookie': cookieString,
-          'Referer': baseUrl,
-          'Origin': baseUrl,
-        },
-        maxRedirects: 5,
-      }
-    );
-
-    const responseText = String(uploadResponse.data);
-    console.log('[uploadAndConfigure] Upload response preview:', responseText.substring(0, 300));
-
-    const processMatch =
-      responseText.match(/AI Leads\/process\/(\d+)/) ||
-      responseText.match(/Leads\/process\/(\d+)/) ||
-      responseText.match(/process\/(\d+)/) ||
-      responseText.match(/spawn\([^,]+,\s*['"](?:AI Leads\/)?process\/(\d+)['"]/);
-
-    if (!processMatch) {
-      throw new Error(`Could not find process ID in response: ${responseText.substring(0, 300)}`);
-    }
-
-    const processId = processMatch[1];
-    console.log(`[uploadAndConfigure] Process ID: ${processId}`);
-
-    // ── NAVIGATE TO LEADS TAB ─────────────────────────────────────────────
-
-    console.log('[uploadAndConfigure] Clicking Leads tab...');
+    console.log('[uploadAndConfigure] Opening Lead Management panel...');
     await page.evaluate(() => {
-      const links = document.querySelectorAll('a.dash_link');
-      for (const link of links) {
-        if (link.getAttribute('href') === '-AI Leads/pools') {
-          link.click();
+      const links = document.querySelectorAll('a, div, span');
+      for (const el of links) {
+        const title = (el.getAttribute('title') || '').toLowerCase();
+        const text = (el.textContent || '').trim().toLowerCase();
+        if (title === 'leads' || text === 'leads') {
+          el.click();
           return;
         }
       }
     });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2000);
 
-    // ── SET IFRAME TO FIELD MAPPING ───────────────────────────────────────
+    // ── INJECT FILE INTO INPUT VIA FETCH ─────────────────────────────────
 
-    console.log(`[uploadAndConfigure] Navigating iframe to process ${processId}...`);
-    await page.evaluate((pid) => {
-      const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
-      if (iframe) iframe.src = `/AI%20Leads/process/${pid}`;
-    }, processId);
-    await page.waitForTimeout(3000);
+    // Instead of using fileChooser (which opens a native OS dialog),
+    // fetch the CSV from our local server and programmatically assign
+    // it to the file input element.
+    console.log('[uploadAndConfigure] Injecting file via fetch...');
 
-    // ── POLL FOR FIELD MAPPING SCREEN ─────────────────────────────────────
+    // Get the Render server's public URL for Browserbase to reach
+    const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://readymode-agent.onrender.com`;
+    const publicFileUrl = `${renderUrl}/tmp-file/${fileToken}`;
 
-    console.log('[uploadAndConfigure] Polling for field mapping screen...');
-    let fieldFrame = null;
-    for (let i = 0; i < 25; i++) {
-      for (const frame of page.frames()) {
-        try {
-          const btn = await frame.$('input[value="Done - Import leads"]');
-          if (btn) { fieldFrame = frame; break; }
-        } catch {}
+    // Register a temp route on the main express app isn't possible here,
+    // so instead we'll use base64 encoding to pass the file content directly
+    const fileBuffer = fs.readFileSync(tempPath);
+    const base64Content = fileBuffer.toString('base64');
+    const fileName = path.basename(tempPath);
+
+    const injected = await page.evaluate(async ({ b64, name }) => {
+      try {
+        // Decode base64 to binary
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'text/csv' });
+        const file = new File([blob], name, { type: 'text/csv' });
+
+        // Find the file input
+        const input = document.querySelector('#leadsendform input[type="file"]') ||
+                      document.querySelector('input[type="file"]');
+        if (!input) return 'ERROR: no file input found';
+
+        // Use DataTransfer to assign file to input
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+
+        // Trigger change event
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return `OK: assigned ${file.name} (${file.size} bytes) to input`;
+      } catch (e) {
+        return `ERROR: ${e.message}`;
       }
-      if (fieldFrame) break;
-      await page.waitForTimeout(1000);
-      console.log(`[uploadAndConfigure] Polling... attempt ${i + 1}`);
+    }, { b64: base64Content, name: fileName });
+
+    console.log(`[uploadAndConfigure] File injection: ${injected}`);
+
+    if (injected.startsWith('ERROR')) {
+      throw new Error(`File injection failed: ${injected}`);
     }
 
-    if (!fieldFrame) throw new Error('Field mapping screen never appeared after 25s');
-    console.log(`[uploadAndConfigure] Field mapping loaded in frame: ${fieldFrame.name()}`);
+    // ── WAIT FOR CAMPAIGN DROPDOWN TO POPULATE ────────────────────────────
+
+    console.log('[uploadAndConfigure] Waiting for confirmation screen...');
+    await page.waitForFunction(() => {
+      const s = document.querySelector('select[listof="campaigns"]');
+      return s && s.options.length > 1;
+    }, { timeout: 60000 });
+    console.log('[uploadAndConfigure] Confirmation screen loaded');
+    await page.waitForTimeout(500);
 
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
-
-    if (create_new_campaign) {
-      await fieldFrame.click('text=Add a New Campaign');
-      await page.waitForTimeout(1000);
-      await fieldFrame.fill('input[type="text"]:visible', campaign_name);
-      await page.waitForTimeout(500);
-      await fieldFrame.click('button:has-text("OK"), input[value="OK"]');
-      await page.waitForTimeout(1500);
-    } else {
-      const matched = await fieldFrame.evaluate((name) => {
-        const selects = document.querySelectorAll('select');
-        for (const select of selects) {
-          const options = Array.from(select.options);
-          const match = options.find(o =>
-            o.text.toLowerCase().includes(name.toLowerCase()) ||
-            name.toLowerCase().includes(o.text.toLowerCase())
-          );
-          if (match) {
-            select.value = match.value;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-            if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
-              tmp.CCS_Leads_CheckCampaign(select);
-            }
-            return match.text;
-          }
+    const campaignSelected = await page.evaluate((name) => {
+      const select = document.querySelector('select[listof="campaigns"]');
+      if (!select) return 'ERROR: select not found';
+      const options = Array.from(select.options);
+      const match = options.find(o =>
+        o.text.trim().toLowerCase().includes(name.toLowerCase()) ||
+        name.toLowerCase().includes(o.text.trim().toLowerCase())
+      );
+      if (match) {
+        select.value = match.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+          tmp.CCS_Leads_CheckCampaign(select);
         }
-        return null;
-      }, campaign_name);
+        return match.text.trim();
+      }
+      return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
+    }, campaign_name);
 
-      if (!matched) throw new Error(`Campaign "${campaign_name}" not found in dropdown`);
-      console.log(`[uploadAndConfigure] Campaign matched: ${matched}`);
-      await page.waitForTimeout(1000);
+    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
+      throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
     }
+    console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
+    await page.waitForTimeout(500);
 
-    // ── CLICK IMPORT ──────────────────────────────────────────────────────
+    // ── CLICK DONE - IMPORT LEADS ─────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await fieldFrame.click('input[value="Done - Import leads"]');
+    await page.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
+      .first()
+      .click({ timeout: 10000 });
 
-    // Readymode fires import as background XHR — flat 8s wait is enough
     console.log('[uploadAndConfigure] Waiting 8s for import to process...');
     await page.waitForTimeout(8000);
-    console.log('[uploadAndConfigure] Import wait complete');
-
-    // ── NAVIGATE TO CAMPAIGNS TAB ─────────────────────────────────────────
-
-    console.log('[uploadAndConfigure] Navigating to Campaigns tab...');
-    const campaignTabClicked = await page.evaluate(() => {
-      const anchors = document.querySelectorAll('ul.ui-tabs-nav a, #tabs a, .ui-tabs a');
-      for (const a of anchors) {
-        if (a.textContent.trim().toLowerCase() === 'campaigns') {
-          a.click();
-          return true;
-        }
-      }
-      const allLinks = document.querySelectorAll('a');
-      for (const a of allLinks) {
-        const href = (a.getAttribute('href') || '').toLowerCase();
-        const text = a.textContent.trim().toLowerCase();
-        if (text === 'campaigns' || href.includes('campaigns')) {
-          a.click();
-          return true;
-        }
-      }
-      return false;
-    });
-
-    if (!campaignTabClicked) {
-      await page.locator('a:has-text("Campaigns")').first().click({ timeout: 10000 });
-    }
-    await page.waitForTimeout(3000);
-
-    // ── FIND AND OPEN CAMPAIGN ────────────────────────────────────────────
-
-    console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
-    let campItem = null;
-    for (let i = 0; i < 15; i++) {
-      campItem = page.locator(`#campaign_list li`).filter({ hasText: campaign_name }).first();
-      const count = await campItem.count();
-      if (count > 0) break;
-      await page.waitForTimeout(1000);
-      console.log(`[uploadAndConfigure] Waiting for campaign list... attempt ${i + 1}`);
-    }
-
-    if (!campItem || await campItem.count() === 0) {
-      throw new Error(`Campaign "${campaign_name}" not found in campaign list`);
-    }
-
-    await campItem.click();
-    await page.waitForTimeout(3000);
-    console.log('[uploadAndConfigure] Campaign opened');
-
-    // ── PHONE GROUPS: CHECK ALL ───────────────────────────────────────────
-
-    console.log('[uploadAndConfigure] Assigning phone groups...');
-    try {
-      const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
-      await phoneGroupBtn.waitFor({ timeout: 8000 });
-      await phoneGroupBtn.click();
-      await page.waitForTimeout(1000);
-
-      const checkAllClicked = await page.evaluate(() => {
-        const candidates = [
-          document.querySelector('a.ui-multiselect-all'),
-          ...[...document.querySelectorAll('a')].filter(a => a.textContent.trim().toLowerCase() === 'check all'),
-        ];
-        for (const el of candidates) {
-          if (el) { el.click(); return true; }
-        }
-        return false;
-      });
-
-      if (!checkAllClicked) {
-        await page.locator('text=Check All').first().click({ timeout: 5000 });
-      }
-
-      await page.waitForTimeout(800);
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(500);
-      console.log('[uploadAndConfigure] Phone groups: all checked');
-    } catch (e) {
-      console.log(`[uploadAndConfigure] Phone groups step failed (non-fatal): ${e.message}`);
-    }
-
-    // ── CALL RESULTS: CHECK ALL, THEN UNCHECK 4 ──────────────────────────
-
-    console.log('[uploadAndConfigure] Configuring call results...');
-    try {
-      const callResultBtn = page.locator('button.ui-multiselect').nth(1);
-      await callResultBtn.waitFor({ timeout: 8000 });
-      await callResultBtn.click();
-      await page.waitForTimeout(1000);
-
-      const checkAllClicked = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('a.ui-multiselect-all, a')];
-        const target = all.find(a =>
-          a.classList.contains('ui-multiselect-all') ||
-          a.textContent.trim().toLowerCase() === 'check all'
-        );
-        if (target) { target.click(); return true; }
-        return false;
-      });
-
-      if (!checkAllClicked) {
-        await page.locator('text=Check All').first().click({ timeout: 5000 });
-      }
-
-      await page.waitForTimeout(800);
-
-      const excluded = ['CS Log', 'Transfer', 'Not Available', 'Not in Service'];
-      for (const item of excluded) {
-        try {
-          const label = page.locator(`.ui-multiselect-menu label`).filter({ hasText: item }).first();
-          const labelCount = await label.count();
-          if (labelCount > 0) {
-            const cb = label.locator('input[type="checkbox"]');
-            const isChecked = await cb.isChecked().catch(() => false);
-            if (isChecked) {
-              await label.click();
-              await page.waitForTimeout(300);
-              console.log(`[uploadAndConfigure] Unchecked: ${item}`);
-            } else {
-              console.log(`[uploadAndConfigure] "${item}" already unchecked`);
-            }
-          }
-        } catch (e) {
-          console.log(`[uploadAndConfigure] Could not uncheck "${item}": ${e.message}`);
-        }
-      }
-
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(500);
-      console.log('[uploadAndConfigure] Call results configured');
-    } catch (e) {
-      console.log(`[uploadAndConfigure] Call results step failed (non-fatal): ${e.message}`);
-    }
-
-    // ── CLOSE ACCORDION ───────────────────────────────────────────────────
-
-    try {
-      await page.click('img.closer.accordion-container-closer', { timeout: 3000 });
-      await page.waitForTimeout(1000);
-    } catch {}
+    console.log('[uploadAndConfigure] Import complete');
 
     return {
-      message: `✅ Leads uploaded to *${campaign_name}*${create_new_campaign ? ' (new campaign created)' : ''}. Phone groups assigned and call results configured.`,
+      message: `✅ Leads uploaded to campaign *${campaignSelected}*.`,
     };
 
   } finally {
+    server.close();
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
