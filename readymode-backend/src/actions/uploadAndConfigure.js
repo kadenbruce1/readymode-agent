@@ -68,6 +68,23 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     console.log('[uploadAndConfigure] Form submitted');
 
+    // Wait for iframe to load the response
+    await page.waitForTimeout(5000);
+
+    // Check what loaded in the lead_csv_postwindow iframe
+    const iframeContent = await page.evaluate(() => {
+      const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
+      if (!iframe) return 'ERROR: iframe not found';
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (!doc) return 'ERROR: cannot access iframe document';
+        return doc.body?.innerHTML?.substring(0, 500) || 'EMPTY';
+      } catch (e) {
+        return `ERROR: ${e.message}`;
+      }
+    });
+    console.log(`[uploadAndConfigure] Iframe content: ${iframeContent}`);
+
     // ── WAIT FOR CAMPAIGN DROPDOWN TO POPULATE ────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for confirmation screen...');
