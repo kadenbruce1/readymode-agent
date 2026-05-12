@@ -73,30 +73,37 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
-    // The confirmation screen loads inside the lead_csv_postwindow iframe
-    console.log('[uploadAndConfigure] Looking for confirmation iframe...');
-    let confirmFrame = null;
-    for (let i = 0; i < 15; i++) {
-      for (const frame of page.frames()) {
-        try {
-          const sel = await frame.$('select[listof="campaigns"]');
-          if (sel) { confirmFrame = frame; break; }
-        } catch {}
-      }
-      if (confirmFrame) break;
-      await page.waitForTimeout(1000);
-      console.log(`[uploadAndConfigure] Polling for iframe... attempt ${i + 1}`);
-    }
-
-    if (!confirmFrame) throw new Error('Campaign dropdown not found in any frame');
-    console.log(`[uploadAndConfigure] Found campaign dropdown in frame: ${confirmFrame.name()}`);
-
-    // Wait for options to populate
-    await confirmFrame.waitForFunction(() => {
+    // Campaign select is in the main page DOM (not an iframe)
+    console.log('[uploadAndConfigure] Waiting for campaign dropdown to populate...');
+    await page.waitForFunction(() => {
       const s = document.querySelector('select[listof="campaigns"]');
       return s && s.options.length > 1;
-    }, { timeout: 10000 });
+    }, { timeout: 20000 });
+    await page.waitForTimeout(500);
     console.log('[uploadAndConfigure] Campaign dropdown populated');
+
+    const campaignSelected = await page.evaluate((name) => {
+      const select = document.querySelector('select[listof="campaigns"]');
+      if (!select) return 'ERROR: select not found';
+      const options = Array.from(select.options);
+      const match = options.find(o =>
+        o.text.trim().toLowerCase().includes(name.toLowerCase()) ||
+        name.toLowerCase().includes(o.text.trim().toLowerCase())
+      );
+      if (match) {
+        select.value = match.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+          tmp.CCS_Leads_CheckCampaign(select);
+        }
+        return match.text.trim();
+      }
+      return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
+    }, campaign_name);
+
+    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
+      throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
+    }
 
     const campaignSelected = await confirmFrame.evaluate((name) => {
       const container = document.querySelector('#xcont-6') ||
@@ -132,7 +139,7 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     if (channel_name) {
       console.log(`[uploadAndConfigure] Selecting channel: ${channel_name}`);
-      const channelSelected = await confirmFrame.evaluate((name) => {
+      const channelSelected = await page.evaluate((name) => {
         const selects = document.querySelectorAll('select');
         for (const select of selects) {
           const options = Array.from(select.options);
@@ -156,7 +163,7 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     // ── CLICK DONE - IMPORT LEADS ─────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await confirmFrame.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
+    await page.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
       .first()
       .click({ timeout: 10000 });
 
