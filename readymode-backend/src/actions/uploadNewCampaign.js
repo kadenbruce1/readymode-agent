@@ -283,45 +283,66 @@ async function uploadNewCampaign({ campaign_name, file_url }) {
       const callResultBtn = page.locator('button.ui-multiselect').nth(1);
       await callResultBtn.waitFor({ timeout: 8000 });
       await callResultBtn.click();
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
 
-      const checkAllClicked = await page.evaluate(() => {
-        const all = [...document.querySelectorAll('a.ui-multiselect-all, a')];
-        const target = all.find(a =>
-          a.classList.contains('ui-multiselect-all') ||
-          a.textContent.trim().toLowerCase() === 'check all'
-        );
-        if (target) { target.click(); return true; }
-        return false;
+      // Check All via direct DOM — find the open multiselect menu and click check all
+      const checkAllResult = await page.evaluate(() => {
+        // Find the visible/open multiselect menu
+        const menus = document.querySelectorAll('.ui-multiselect-menu');
+        let openMenu = null;
+        for (const menu of menus) {
+          const style = window.getComputedStyle(menu);
+          if (style.display !== 'none' && style.visibility !== 'hidden') {
+            openMenu = menu;
+            break;
+          }
+        }
+        if (!openMenu) return 'ERROR: no open menu found';
+
+        // Click Check All inside this menu
+        const checkAll = openMenu.querySelector('a.ui-multiselect-all') ||
+          [...openMenu.querySelectorAll('a')].find(a => a.textContent.trim().toLowerCase() === 'check all');
+        if (!checkAll) return 'ERROR: check all not found in menu';
+        checkAll.click();
+        return 'OK';
       });
 
-      if (!checkAllClicked) {
-        await page.locator('text=Check All').first().click({ timeout: 5000 });
-      }
+      console.log(`[uploadNewCampaign] Check all result: ${checkAllResult}`);
+      await page.waitForTimeout(1000);
 
-      await page.waitForTimeout(800);
-
+      // Uncheck excluded items directly via DOM
       const excluded = ['CS Log', 'Transfer', 'Not Available', 'Not in Service'];
-      for (const item of excluded) {
-        try {
-          const label = page.locator(`.ui-multiselect-menu label`).filter({ hasText: item }).first();
-          const labelCount = await label.count();
-          if (labelCount > 0) {
-            const cb = label.locator('input[type="checkbox"]');
-            const isChecked = await cb.isChecked().catch(() => false);
-            if (isChecked) {
-              await label.click();
-              await page.waitForTimeout(300);
-              console.log(`[uploadNewCampaign] Unchecked: ${item}`);
+      const unchecked = await page.evaluate((excludedItems) => {
+        const menus = document.querySelectorAll('.ui-multiselect-menu');
+        let openMenu = null;
+        for (const menu of menus) {
+          const style = window.getComputedStyle(menu);
+          if (style.display !== 'none' && style.visibility !== 'hidden') {
+            openMenu = menu;
+            break;
+          }
+        }
+        if (!openMenu) return ['ERROR: no open menu'];
+
+        const results = [];
+        const labels = openMenu.querySelectorAll('label');
+        for (const label of labels) {
+          const labelText = label.textContent.trim();
+          if (excludedItems.some(ex => labelText.toLowerCase().includes(ex.toLowerCase()))) {
+            const cb = label.querySelector('input[type="checkbox"]');
+            if (cb && cb.checked) {
+              cb.click();
+              results.push(`unchecked: ${labelText}`);
             } else {
-              console.log(`[uploadNewCampaign] "${item}" already unchecked`);
+              results.push(`already unchecked: ${labelText}`);
             }
           }
-        } catch (e) {
-          console.log(`[uploadNewCampaign] Could not uncheck "${item}": ${e.message}`);
         }
-      }
+        return results;
+      }, excluded);
 
+      unchecked.forEach(r => console.log(`[uploadNewCampaign] ${r}`));
+      await page.waitForTimeout(500);
       await page.keyboard.press('Escape');
       await page.waitForTimeout(500);
       console.log('[uploadNewCampaign] Call results configured');
