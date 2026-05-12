@@ -61,6 +61,24 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     await fileChooser.setFiles(tempPath);
     console.log('[uploadAndConfigure] File attached');
 
+    // The file input is inside #leadsendform which submits to load the confirmation screen
+    // fileChooser.setFiles() sets the value but doesn't auto-submit — trigger it manually
+    await page.waitForTimeout(1000);
+    console.log('[uploadAndConfigure] Triggering form submission...');
+    const submitted = await page.evaluate(() => {
+      const input = document.querySelector('#leadsendform input[type="file"]');
+      if (input) {
+        // Trigger change event which Readymode listens to for auto-submit
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'change event fired';
+      }
+      // Fallback: submit the form directly
+      const form = document.querySelector('#leadsendform');
+      if (form) { form.submit(); return 'form submitted'; }
+      return 'nothing found';
+    });
+    console.log(`[uploadAndConfigure] Submission trigger: ${submitted}`);
+
     // ── WAIT FOR UPLOAD CONFIRMATION SCREEN ──────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for upload confirmation screen...');
