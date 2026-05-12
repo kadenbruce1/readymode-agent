@@ -12,13 +12,8 @@ const app = new App({
   receiver,
 });
 
-// ── In-memory conversation state ──────────────────────────────────────────
-const conversations = {};
-
-// ── Health check ──────────────────────────────────────────────────────────
 receiver.router.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// ── Message handler ───────────────────────────────────────────────────────
 app.message(async ({ message, client }) => {
   if (message.subtype === 'bot_message' || message.bot_id) return;
 
@@ -30,20 +25,55 @@ app.message(async ({ message, client }) => {
 
   console.log(`[Slack] "${text}" | files: ${files.length}`);
 
-  // Check if this is a reply inside an active upload conversation
-  if (message.thread_ts && conversations[message.thread_ts]) {
-    await handleConversationReply(message, client, text);
-    return;
-  }
-
-  // Check if a CSV file was uploaded
+  // ── CSV file upload — parse campaign name from message text ──────────────
   if (files.length > 0 && files.some(f => f.name?.endsWith('.csv') || f.mimetype?.includes('csv'))) {
     const csvFile = files.find(f => f.name?.endsWith('.csv') || f.mimetype?.includes('csv'));
-    await startUploadConversation(message, client, csvFile);
+
+    // Need campaign name from message text
+    if (!text) {
+      await client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.ts,
+        text: `📁 Got the CSV! Please re-upload it with a message telling me the campaign name. For example: *"upload to IFW Sharp"* (attach CSV)`,
+      });
+      return;
+    }
+
+    await client.chat.postMessage({
+      channel: message.channel,
+      thread_ts: message.ts,
+      text: `⏳ On it! Uploading *${csvFile.name}* now...`,
+    });
+
+    try {
+      // Use Claude to extract campaign name and whether it's new
+      const action = await parseIntent(text + ` [CSV file attached: ${csvFile.name}]`);
+      console.log('[Claude] Action:', JSON.stringify(action));
+
+      const { uploadAndConfigure } = require('./actions/uploadAndConfigure');
+      const result = await uploadAndConfigure({
+        campaign_name: action.campaign_name,
+        file_url: csvFile.url_private_download,
+        create_new_campaign: action.create_new_campaign || false,
+      });
+
+      await client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.ts,
+        text: `✅ ${result.message}`,
+      });
+    } catch (err) {
+      console.error('[Upload Error]', err.message);
+      await client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.ts,
+        text: `❌ Something went wrong: \`${err.message}\``,
+      });
+    }
     return;
   }
 
-  // Regular message
+  // ── Regular message ───────────────────────────────────────────────────────
   await client.chat.postMessage({
     channel: message.channel,
     thread_ts: message.ts,
@@ -68,93 +98,6 @@ app.message(async ({ message, client }) => {
     });
   }
 });
-
-// ── Start upload conversation ─────────────────────────────────────────────
-async function startUploadConversation(message, client, csvFile) {
-  conversations[message.ts] = {
-    channel: message.channel,
-    threadTs: message.ts,
-    fileUrl: csvFile.url_private_download,
-    fileName: csvFile.name,
-    step: 'ask_campaign_type',
-  };
-
-  await client.chat.postMessage({
-    channel: message.channel,
-    thread_ts: message.ts,
-    text: `📁 Got the file *${csvFile.name}*!\n\nAre you uploading to a *new campaign* or an *existing campaign*? (Reply "new" or "existing")`,
-  });
-}
-
-// ── Handle replies inside an upload conversation ──────────────────────────
-async function handleConversationReply(message, client, text) {
-  const convo = conversations[message.thread_ts];
-  const lower = text.toLowerCase().trim();
-
-  if (convo.step === 'ask_campaign_type') {
-    if (lower.includes('new')) {
-      convo.createNew = true;
-      convo.step = 'ask_campaign_name';
-      await client.chat.postMessage({
-        channel: message.channel,
-        thread_ts: message.thread_ts,
-        text: `What would you like to name the new campaign?`,
-      });
-    } else if (lower.includes('existing')) {
-      convo.createNew = false;
-      convo.step = 'ask_campaign_name';
-      await client.chat.postMessage({
-        channel: message.channel,
-        thread_ts: message.thread_ts,
-        text: `What is the name of the existing campaign?`,
-      });
-    } else {
-      await client.chat.postMessage({
-        channel: message.channel,
-        thread_ts: message.thread_ts,
-        text: `Please reply with "new" or "existing".`,
-      });
-    }
-    return;
-  }
-
-  if (convo.step === 'ask_campaign_name') {
-    convo.campaignName = text.trim();
-
-    // All questions answered — execute
-    convo.step = 'executing';
-    await client.chat.postMessage({
-      channel: convo.channel,
-      thread_ts: convo.threadTs,
-      text: `⏳ Uploading *${convo.fileName}* to *${convo.campaignName}*${convo.createNew ? ' (new campaign)' : ''}. This may take a minute...`,
-    });
-
-    try {
-      const { uploadAndConfigure } = require('./actions/uploadAndConfigure');
-      const result = await uploadAndConfigure({
-        campaign_name: convo.campaignName,
-        file_url: convo.fileUrl,
-        create_new_campaign: convo.createNew,
-      });
-
-      await client.chat.postMessage({
-        channel: convo.channel,
-        thread_ts: convo.threadTs,
-        text: `✅ ${result.message}`,
-      });
-    } catch (err) {
-      console.error('[Upload Error]', err.message);
-      await client.chat.postMessage({
-        channel: convo.channel,
-        thread_ts: convo.threadTs,
-        text: `❌ Something went wrong: \`${err.message}\``,
-      });
-    }
-
-    delete conversations[message.thread_ts];
-    return;
-  }
-}
 
 (async () => {
   const port = process.env.PORT || 3000;
