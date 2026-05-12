@@ -17,17 +17,20 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // ── PART 1: UPLOAD LEADS ─────────────────────────────────────────────
 
-    // Navigate to Upload Leads
-    console.log('[uploadAndConfigure] Navigating to Upload Leads...');
-    await page.goto(`${process.env.READYMODE_URL}/AI Leads/upload`, { waitUntil: 'networkidle' });
+    // Start from dashboard
+    console.log('[uploadAndConfigure] Going to dashboard...');
+    await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Click Upload Leads link if we landed on the leads page instead
-    const uploadLink = await page.$('a.uploadlink');
-    if (uploadLink) {
-      await uploadLink.click();
-      await page.waitForTimeout(2000);
-    }
+    // Click Leads in the sidebar
+    console.log('[uploadAndConfigure] Clicking Leads...');
+    await page.click('a[href="-AI Leads/pools"]');
+    await page.waitForTimeout(2000);
+
+    // Click Upload Leads
+    console.log('[uploadAndConfigure] Clicking Upload Leads...');
+    await page.click('a.uploadlink');
+    await page.waitForTimeout(2000);
 
     // Click OK on popup if it appears
     try {
@@ -57,11 +60,9 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1500);
     } else {
       console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
+      await page.waitForTimeout(2000);
 
-      // Wait for campaign list to load
-      await page.waitForTimeout(3000);
-
-      // Try campaign list first
+      // Try campaign list
       const campaignItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
       const listVisible = await campaignItem.isVisible().catch(() => false);
 
@@ -72,11 +73,10 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
         await page.waitForTimeout(500);
       } else {
         // Try select dropdown
-        const selectVisible = await page.$('select[name="set[campaignId]"]');
-        if (selectVisible) {
+        const selectEl = await page.$('select[name="set[campaignId]"]');
+        if (selectEl) {
           await page.selectOption('select[name="set[campaignId]"]', { label: campaign_name });
         } else {
-          // Try clicking text directly
           await page.click(`text="${campaign_name}"`);
           await page.waitForTimeout(500);
           await page.click(`text="${campaign_name}"`);
