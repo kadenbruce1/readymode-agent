@@ -42,56 +42,57 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // The file picker opens — use setInputFiles on the hidden file input
-    // We need to intercept the file chooser
-    console.log('[uploadAndConfigure] Handling file upload...');
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 10000 }),
-      // The file chooser should already be open from clicking Upload Leads
-      // If not, try clicking any file input
-      page.$('input[type="file"]').then(el => el && el.click()).catch(() => {}),
-    ]);
-
-    if (fileChooser) {
-      await fileChooser.setFiles(tempPath);
-      console.log('[uploadAndConfigure] File set via file chooser');
-    } else {
-      // Fallback: directly set the file input
-      const fileInput = await page.$('input[type="file"]');
-      if (fileInput) await fileInput.setInputFiles(tempPath);
+    // Set file directly on any hidden file input without triggering file chooser
+    console.log('[uploadAndConfigure] Setting file on input...');
+    const fileInputs = await page.$$('input[type="file"]');
+    if (fileInputs.length > 0) {
+      for (const input of fileInputs) {
+        try {
+          await input.setInputFiles(tempPath);
+          console.log('[uploadAndConfigure] File set on input');
+          break;
+        } catch (e) {
+          console.log('[uploadAndConfigure] Could not set file on input:', e.message);
+        }
+      }
     }
     await page.waitForTimeout(2000);
 
-    // Handle confirmation popup — "Confirm: uploading lead file" → click OK
-    console.log('[uploadAndConfigure] Confirming file upload...');
-    try {
-      page.on('dialog', dialog => dialog.accept());
-      await page.waitForTimeout(1000);
-    } catch {}
+    // Handle native browser dialog (confirm upload)
+    page.on('dialog', async dialog => {
+      console.log('[uploadAndConfigure] Dialog:', dialog.message());
+      await dialog.accept();
+    });
+    await page.waitForTimeout(1000);
 
-    // Also try clicking OK button if it's a custom dialog
+    // Also try clicking OK if custom dialog
     try {
-      await page.waitForSelector('button:has-text("OK")', { timeout: 5000 });
-      await page.click('button:has-text("OK")');
+      const okBtn = await page.$('button:has-text("OK")');
+      if (okBtn) {
+        await okBtn.click();
+        console.log('[uploadAndConfigure] Clicked OK button');
+      }
       await page.waitForTimeout(2000);
     } catch {}
 
-    // ── Field mapping screen is now showing ──────────────────────────────
+    // Wait for field mapping screen
+    console.log('[uploadAndConfigure] Waiting for field mapping screen...');
+    await page.waitForTimeout(3000);
 
-    // Select campaign from the Campaign Name dropdown on the RIGHT side
+    // Set campaign from the dropdown on the right side
     console.log(`[uploadAndConfigure] Setting campaign: ${campaign_name}`);
 
     if (create_new_campaign) {
-      // Type new campaign name directly
-      await page.waitForSelector('input[name*="campaign"], #campaign_name', { timeout: 5000 });
-      await page.fill('input[name*="campaign"], #campaign_name', campaign_name);
+      // Click Add a New Campaign
+      await page.click('text=Add a New Campaign');
+      await page.waitForTimeout(1000);
+      await page.fill('input[type="text"]:visible', campaign_name);
+      await page.waitForTimeout(500);
+      await page.click('button:has-text("OK"), input[value="OK"]');
+      await page.waitForTimeout(1000);
     } else {
-      // Find the Campaign Name select on the right side of the screen
-      await page.waitForTimeout(2000);
-
-      // Use evaluate to find and set the campaign dropdown by partial name match
+      // Scan all select elements for matching campaign
       const matched = await page.evaluate((name) => {
-        // Look for select elements that contain campaign options
         const selects = document.querySelectorAll('select');
         for (const select of selects) {
           const options = Array.from(select.options);
@@ -111,31 +112,29 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       if (matched) {
         console.log(`[uploadAndConfigure] Selected campaign: ${matched}`);
       } else {
-        console.log(`[uploadAndConfigure] Could not find campaign "${campaign_name}" in any dropdown — proceeding anyway`);
+        console.log(`[uploadAndConfigure] Campaign not found in dropdowns — proceeding`);
       }
       await page.waitForTimeout(1000);
     }
 
     // Click Done - Import leads
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await page.click('button:has-text("Done - Import leads"), input[value="Done - Import leads"]');
+    await page.click('input[value="Done - Import leads"], button:has-text("Done - Import leads")');
     await page.waitForTimeout(5000);
 
     // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
 
-    // Go to Campaigns tab
     console.log('[uploadAndConfigure] Going to Campaigns tab...');
     await page.click('#ui-id-18');
     await page.waitForTimeout(2000);
 
-    // Click the campaign in the list
     console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
     const campItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
     await campItem.waitFor({ timeout: 10000 });
     await campItem.click();
     await page.waitForTimeout(2000);
 
-    // Open Phone Groups → Check All
+    // Phone Groups → Check All
     console.log('[uploadAndConfigure] Assigning phone groups...');
     const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
     await phoneGroupBtn.click();
@@ -145,7 +144,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
 
-    // Open Call Results → Check All → Uncheck 4
+    // Call Results → Check All → Uncheck 4
     console.log('[uploadAndConfigure] Configuring call results...');
     const callResultBtn = page.locator('button.ui-multiselect').nth(1);
     await callResultBtn.click();
@@ -172,7 +171,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
 
-    // Close campaign
     try {
       await page.click('img.closer.accordion-container-closer');
       await page.waitForTimeout(1000);
