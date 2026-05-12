@@ -15,31 +15,33 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   const { stagehand, page } = await getStagehand();
   try {
 
-    // Navigate directly to the Lead upload page
+    // ── PART 1: UPLOAD LEADS ─────────────────────────────────────────────
+
+    // Navigate to Upload Leads
     console.log('[uploadAndConfigure] Navigating to Upload Leads...');
     await page.goto(`${process.env.READYMODE_URL}/AI Leads/upload`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // If that didn't work, try clicking Upload Leads link
+    // Click Upload Leads link if we landed on the leads page instead
     const uploadLink = await page.$('a.uploadlink');
     if (uploadLink) {
       await uploadLink.click();
       await page.waitForTimeout(2000);
     }
 
-    // Click OK on popup
+    // Click OK on popup if it appears
     try {
       await page.waitForSelector('button:has-text("OK"), input[value="OK"]', { timeout: 3000 });
       await page.click('button:has-text("OK"), input[value="OK"]');
       await page.waitForTimeout(1500);
     } catch {}
 
-    // Upload CSV
+    // Upload the CSV file
     console.log('[uploadAndConfigure] Uploading CSV...');
     const fileInput = await page.$('input[type="file"]');
     if (fileInput) {
       await fileInput.setInputFiles(tempPath);
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
     }
 
     // Select or create campaign
@@ -55,14 +57,40 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1500);
     } else {
       console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
-      await page.selectOption('select[name="set[campaignId]"]', { label: campaign_name });
-      await page.waitForTimeout(1000);
+
+      // Wait for campaign list to load
+      await page.waitForTimeout(3000);
+
+      // Try campaign list first
+      const campaignItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
+      const listVisible = await campaignItem.isVisible().catch(() => false);
+
+      if (listVisible) {
+        await campaignItem.click();
+        await page.waitForTimeout(500);
+        await campaignItem.click();
+        await page.waitForTimeout(500);
+      } else {
+        // Try select dropdown
+        const selectVisible = await page.$('select[name="set[campaignId]"]');
+        if (selectVisible) {
+          await page.selectOption('select[name="set[campaignId]"]', { label: campaign_name });
+        } else {
+          // Try clicking text directly
+          await page.click(`text="${campaign_name}"`);
+          await page.waitForTimeout(500);
+          await page.click(`text="${campaign_name}"`);
+        }
+        await page.waitForTimeout(500);
+      }
     }
 
     // Click Done - Import leads
     console.log('[uploadAndConfigure] Importing leads...');
     await page.click('input[value="Done - Import leads"]');
     await page.waitForTimeout(5000);
+
+    // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
 
     // Go to Campaigns tab
     console.log('[uploadAndConfigure] Going to Campaigns tab...');
@@ -71,10 +99,12 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // Click the campaign
     console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
-    await page.click(`li:has-text("${campaign_name}")`);
+    const campItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
+    await campItem.waitFor({ timeout: 10000 });
+    await campItem.click();
     await page.waitForTimeout(2000);
 
-    // Open Phone Groups and Check All
+    // Open Phone Groups → Check All
     console.log('[uploadAndConfigure] Assigning phone groups...');
     const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
     await phoneGroupBtn.click();
@@ -84,7 +114,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
 
-    // Open Call Results and Check All then uncheck 4
+    // Open Call Results → Check All → Uncheck 4
     console.log('[uploadAndConfigure] Configuring call results...');
     const callResultBtn = page.locator('button.ui-multiselect').nth(1);
     await callResultBtn.click();
