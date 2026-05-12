@@ -156,19 +156,11 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
     await fieldFrame.click('input[value="Done - Import leads"]');
 
-    // Wait for import to finish — poll until the button is gone or 20s passes
-    console.log('[uploadAndConfigure] Waiting for import to complete...');
-    let importDone = false;
-    for (let i = 0; i < 20; i++) {
-      await page.waitForTimeout(1000);
-      try {
-        const btn = await fieldFrame.$('input[value="Done - Import leads"]');
-        if (!btn) { importDone = true; break; }
-      } catch { importDone = true; break; }
-      console.log(`[uploadAndConfigure] Waiting for import... ${i + 1}s`);
-    }
-    console.log(`[uploadAndConfigure] Import ${importDone ? 'complete' : 'timed out, continuing anyway'}`);
-    await page.waitForTimeout(2000);
+    // Readymode's import button does not disappear after click —
+    // the page submits via XHR in the background. Flat 8s wait is enough.
+    console.log('[uploadAndConfigure] Waiting 8s for import to process...');
+    await page.waitForTimeout(8000);
+    console.log('[uploadAndConfigure] Import wait complete');
 
     // ── NAVIGATE TO CAMPAIGNS TAB (stable) ───────────────────────────────
 
