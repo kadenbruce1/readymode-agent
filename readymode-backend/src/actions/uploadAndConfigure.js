@@ -17,12 +17,11 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // ── PART 1: UPLOAD LEADS ─────────────────────────────────────────────
 
-    // Start from dashboard
     console.log('[uploadAndConfigure] Going to dashboard...');
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Click Leads via JavaScript to bypass visibility issues
+    // Click Leads via JS
     console.log('[uploadAndConfigure] Clicking Leads via JS...');
     await page.evaluate(() => {
       const links = document.querySelectorAll('a.dash_link');
@@ -35,7 +34,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    // Click Upload Leads
+    // Click Upload Leads via JS
     console.log('[uploadAndConfigure] Clicking Upload Leads...');
     await page.evaluate(() => {
       const upload = document.querySelector('a.uploadlink');
@@ -43,14 +42,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // Click OK on popup if it appears
+    // Click OK on popup
     try {
       await page.waitForSelector('button:has-text("OK"), input[value="OK"]', { timeout: 3000 });
       await page.click('button:has-text("OK"), input[value="OK"]');
       await page.waitForTimeout(1500);
     } catch {}
 
-    // Upload the CSV file
+    // Upload CSV
     console.log('[uploadAndConfigure] Uploading CSV...');
     const fileInput = await page.$('input[type="file"]');
     if (fileInput) {
@@ -71,27 +70,30 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1500);
     } else {
       console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
-      await page.waitForTimeout(2000);
 
-      const campaignItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
-      const listVisible = await campaignItem.isVisible().catch(() => false);
+      // Wait for select to load
+      await page.waitForSelector('select[name="set[campaignId]"]', { timeout: 10000 });
+      await page.waitForTimeout(1000);
 
-      if (listVisible) {
-        await campaignItem.click();
-        await page.waitForTimeout(500);
-        await campaignItem.click();
-        await page.waitForTimeout(500);
+      // Get all options and find the one that matches (case-insensitive partial match)
+      const matchingValue = await page.evaluate((name) => {
+        const select = document.querySelector('select[name="set[campaignId]"]');
+        if (!select) return null;
+        const options = Array.from(select.options);
+        const match = options.find(o =>
+          o.text.toLowerCase().includes(name.toLowerCase()) ||
+          name.toLowerCase().includes(o.text.toLowerCase())
+        );
+        return match ? match.value : null;
+      }, campaign_name);
+
+      if (matchingValue) {
+        await page.selectOption('select[name="set[campaignId]"]', { value: matchingValue });
+        console.log(`[uploadAndConfigure] Selected campaign value: ${matchingValue}`);
       } else {
-        const selectEl = await page.$('select[name="set[campaignId]"]');
-        if (selectEl) {
-          await page.selectOption('select[name="set[campaignId]"]', { label: campaign_name });
-        } else {
-          await page.click(`text="${campaign_name}"`);
-          await page.waitForTimeout(500);
-          await page.click(`text="${campaign_name}"`);
-        }
-        await page.waitForTimeout(500);
+        throw new Error(`Campaign "${campaign_name}" not found in dropdown`);
       }
+      await page.waitForTimeout(1000);
     }
 
     // Click Done - Import leads
@@ -106,7 +108,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.click('#ui-id-18');
     await page.waitForTimeout(2000);
 
-    // Click the campaign
+    // Click the campaign in the list
     console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
     const campItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
     await campItem.waitFor({ timeout: 10000 });
