@@ -97,9 +97,21 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
         dt.items.add(file);
         input.files = dt.files;
 
-        // Trigger change event
+        // Trigger change event then submit the form
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        return `OK: assigned ${file.name} (${file.size} bytes) to input`;
+
+        // Submit the form — Readymode loads confirmation screen via form submit
+        const form = input.closest('form') || document.querySelector('#leadsendform');
+        if (form) {
+          // Use requestSubmit if available (fires submit event), otherwise submit()
+          if (form.requestSubmit) {
+            form.requestSubmit();
+          } else {
+            form.submit();
+          }
+          return `OK: assigned ${file.name} (${file.size} bytes) and submitted form`;
+        }
+        return `OK: assigned ${file.name} (${file.size} bytes) to input — no form found to submit`;
       } catch (e) {
         return `ERROR: ${e.message}`;
       }
