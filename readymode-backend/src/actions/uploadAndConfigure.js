@@ -1,5 +1,4 @@
 const { getStagehand } = require('../stagehand');
-const { getSession } = require('../browserbase');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -13,14 +12,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   const tempPath = path.join(os.tmpdir(), `leads-${Date.now()}.csv`);
   await downloadFile(file_url, tempPath);
 
-  // Read the CSV as base64 so we can inject it via CDP
-  const fileBuffer = fs.readFileSync(tempPath);
-  const fileBase64 = fileBuffer.toString('base64');
-  const fileName = path.basename(tempPath);
-
   const { stagehand, page } = await getStagehand();
-
-  // Get CDP session for direct browser control
   const cdpSession = await page.context().newCDPSession(page);
 
   try {
@@ -31,46 +23,60 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await dialog.accept();
     });
 
-    // ── NAVIGATE TO LEADS ────────────────────────────────────────────────
+    // ── NAVIGATE ─────────────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Going to dashboard...');
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Load Leads tab via Readymode's own JS function
-    console.log('[uploadAndConfigure] Loading Leads tab via JS...');
+    // Click Leads link via JS (clicks hidden element)
+    console.log('[uploadAndConfigure] Clicking Leads...');
     await page.evaluate(() => {
-      tmp.UITab_LoadDynTab('AI Leads/pools', 'xcont-14');
+      const links = document.querySelectorAll('a.dash_link');
+      for (const link of links) {
+        if (link.getAttribute('href') === '-AI Leads/pools') {
+          link.click();
+          break;
+        }
+      }
     });
     await page.waitForTimeout(3000);
 
+    // Click Upload Leads via JS
+    console.log('[uploadAndConfigure] Clicking Upload Leads...');
+    await page.evaluate(() => {
+      const upload = document.querySelector('a.uploadlink');
+      if (upload) upload.click();
+    });
+    await page.waitForTimeout(2000);
+
     // ── INJECT FILE VIA CDP ──────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Finding file input via CDP...');
-
-    // Get the file input node using CDP DOM
-    const { root } = await cdpSession.send('DOM.getDocument');
-    const { nodeId: fileInputNodeId } = await cdpSession.send('DOM.querySelector', {
-      nodeId: root.nodeId,
-      selector: 'input[type="file"]',
-    });
-
-    if (fileInputNodeId) {
-      // Use CDP to set the file directly on the input
-      await cdpSession.send('DOM.setFileInputFiles', {
-        files: [tempPath],
-        nodeId: fileInputNodeId,
+    console.log('[uploadAndConfigure] Injecting file via CDP...');
+    try {
+      const { root } = await cdpSession.send('DOM.getDocument');
+      const { nodeId } = await cdpSession.send('DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector: 'input[type="file"]',
       });
-      console.log('[uploadAndConfigure] File injected via CDP');
-    } else {
-      // Fallback — make input visible and set via Playwright
+      if (nodeId) {
+        await cdpSession.send('DOM.setFileInputFiles', {
+          files: [tempPath],
+          nodeId,
+        });
+        console.log('[uploadAndConfigure] File injected via CDP');
+      }
+    } catch (e) {
+      console.log('[uploadAndConfigure] CDP file inject failed, trying fallback:', e.message);
+      // Fallback: make input visible and use Playwright
       await page.evaluate(() => {
         document.querySelectorAll('input[type="file"]').forEach(i => {
-          i.style.cssText = 'display:block!important;visibility:visible!important;opacity:1!important;position:fixed!important;top:0!important;left:0!important;';
+          i.style.cssText = 'display:block!important;visibility:visible!important;opacity:1!important;position:fixed!important;top:0;left:0;width:100px;height:100px;';
         });
       });
       await page.waitForTimeout(500);
-      await page.locator('input[type="file"]').first().setInputFiles(tempPath);
+      const input = page.locator('input[type="file"]').first();
+      await input.setInputFiles(tempPath);
       console.log('[uploadAndConfigure] File set via fallback');
     }
 
@@ -87,20 +93,15 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
     if (create_new_campaign) {
-      // Click Add a New Campaign link
-      const addLink = await page.$('text=Add a New Campaign');
-      if (addLink) {
-        await addLink.click();
-        await page.waitForTimeout(1000);
-        await page.fill('input[type="text"]:visible', campaign_name);
-        await page.waitForTimeout(500);
-        await page.click('button:has-text("OK"), input[value="OK"]');
-        await page.waitForTimeout(1500);
-      }
+      await page.click('text=Add a New Campaign');
+      await page.waitForTimeout(1000);
+      await page.fill('input[type="text"]:visible', campaign_name);
+      await page.waitForTimeout(500);
+      await page.click('button:has-text("OK"), input[value="OK"]');
+      await page.waitForTimeout(1500);
     } else {
-      // Use CDP to find and set the campaign select
       const matched = await page.evaluate((name) => {
-        // Try the named campaign select first
+        // Try campaign-specific select first
         const campaignSelect = document.querySelector('select[name="set[campaignId]"], select[listof="campaigns"]');
         if (campaignSelect) {
           const options = Array.from(campaignSelect.options);
@@ -111,17 +112,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
           if (match) {
             campaignSelect.value = match.value;
             campaignSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            // Also call Readymode's check function if available
             if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
               tmp.CCS_Leads_CheckCampaign(campaignSelect);
             }
             return match.text;
           }
         }
-
-        // Fallback — search all selects
-        const allSelects = document.querySelectorAll('select');
-        for (const select of allSelects) {
+        // Search all selects
+        for (const select of document.querySelectorAll('select')) {
           const options = Array.from(select.options);
           const match = options.find(o =>
             o.text.toLowerCase().includes(name.toLowerCase()) ||
@@ -136,11 +134,11 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
         return null;
       }, campaign_name);
 
-      console.log(`[uploadAndConfigure] Campaign selected: ${matched || 'not found'}`);
+      console.log(`[uploadAndConfigure] Campaign matched: ${matched || 'not found'}`);
       await page.waitForTimeout(1000);
     }
 
-    // ── IMPORT LEADS ─────────────────────────────────────────────────────
+    // ── IMPORT ───────────────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
     await page.click('input[value="Done - Import leads"]');
