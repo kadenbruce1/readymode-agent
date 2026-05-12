@@ -3,7 +3,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const axios = require('axios');
-const express = require('express');
 
 async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
   if (!campaign_name) throw new Error('campaign_name is required.');
@@ -17,21 +16,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   const fileSize = fs.statSync(tempPath).size;
   console.log(`[uploadAndConfigure] Downloaded file size: ${fileSize} bytes`);
   if (fileSize < 100) throw new Error(`Downloaded file too small (${fileSize} bytes)`);
-
-  // ── SERVE FILE LOCALLY SO BROWSERBASE CAN FETCH IT ───────────────────
-
-  // Browserbase can't access Render's filesystem directly.
-  // Serve the CSV on a local port so the browser can fetch it via HTTP.
-  const fileToken = `file-${Date.now()}`;
-  const servePort = 10001;
-  const app = express();
-  app.get(`/${fileToken}`, (req, res) => {
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.sendFile(tempPath);
-  });
-  const server = app.listen(servePort);
-  console.log(`[uploadAndConfigure] Serving file at http://localhost:${servePort}/${fileToken}`);
 
   const { stagehand, page } = await getStagehand();
 
@@ -59,69 +43,30 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── INJECT FILE INTO INPUT VIA FETCH ─────────────────────────────────
+    // ── USE STAGEHAND TO CLICK UPLOAD LEADS AND HANDLE FILE ──────────────
 
-    // Instead of using fileChooser (which opens a native OS dialog),
-    // fetch the CSV from our local server and programmatically assign
-    // it to the file input element.
-    console.log('[uploadAndConfigure] Injecting file via fetch...');
+    console.log('[uploadAndConfigure] Using Stagehand to trigger upload...');
 
-    // Get the Render server's public URL for Browserbase to reach
-    const renderUrl = process.env.RENDER_EXTERNAL_URL || `https://readymode-agent.onrender.com`;
-    const publicFileUrl = `${renderUrl}/tmp-file/${fileToken}`;
+    // Use the fileChooser intercept + setFiles — this is the most reliable
+    // way to handle file inputs in Playwright/Stagehand
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 15000 }),
+      page.locator('text=Upload Leads').first().click(),
+    ]);
 
-    // Register a temp route on the main express app isn't possible here,
-    // so instead we'll use base64 encoding to pass the file content directly
-    const fileBuffer = fs.readFileSync(tempPath);
-    const base64Content = fileBuffer.toString('base64');
-    const fileName = path.basename(tempPath);
+    await fileChooser.setFiles(tempPath);
+    console.log('[uploadAndConfigure] File set via fileChooser');
 
-    const injected = await page.evaluate(async ({ b64, name }) => {
-      try {
-        // Decode base64 to binary
-        const binary = atob(b64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        const blob = new Blob([bytes], { type: 'text/csv' });
-        const file = new File([blob], name, { type: 'text/csv' });
-
-        // Find the file input
-        const input = document.querySelector('#leadsendform input[type="file"]') ||
-                      document.querySelector('input[type="file"]');
-        if (!input) return 'ERROR: no file input found';
-
-        // Use DataTransfer to assign file to input
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        input.files = dt.files;
-
-        // Trigger change event then submit the form
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Submit the form — Readymode loads confirmation screen via form submit
-        const form = input.closest('form') || document.querySelector('#leadsendform');
-        if (form) {
-          // Use requestSubmit if available (fires submit event), otherwise submit()
-          if (form.requestSubmit) {
-            form.requestSubmit();
-          } else {
-            form.submit();
-          }
-          return `OK: assigned ${file.name} (${file.size} bytes) and submitted form`;
-        }
-        return `OK: assigned ${file.name} (${file.size} bytes) to input — no form found to submit`;
-      } catch (e) {
-        return `ERROR: ${e.message}`;
+    // Now explicitly submit the upload form
+    await page.waitForTimeout(1000);
+    await page.evaluate(() => {
+      const form = document.querySelector('#leadsendform');
+      if (form) {
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
       }
-    }, { b64: base64Content, name: fileName });
-
-    console.log(`[uploadAndConfigure] File injection: ${injected}`);
-
-    if (injected.startsWith('ERROR')) {
-      throw new Error(`File injection failed: ${injected}`);
-    }
+    });
+    console.log('[uploadAndConfigure] Form submitted');
 
     // ── WAIT FOR CAMPAIGN DROPDOWN TO POPULATE ────────────────────────────
 
@@ -177,7 +122,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     };
 
   } finally {
-    server.close();
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
