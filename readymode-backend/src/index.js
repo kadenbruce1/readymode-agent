@@ -12,6 +12,9 @@ const app = new App({
   receiver,
 });
 
+// ── In-memory conversation state ──────────────────────────────────────────
+const conversations = {};
+
 receiver.router.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.message(async ({ message, client }) => {
@@ -22,34 +25,46 @@ app.message(async ({ message, client }) => {
 
   const text = (message.text || '').trim();
   const files = message.files || [];
+  const lower = text.toLowerCase();
 
   console.log(`[Slack] "${text}" | files: ${files.length}`);
 
-  // ── CSV file upload — parse campaign name from message text ──────────────
-  if (files.length > 0 && files.some(f => f.name?.endsWith('.csv') || f.mimetype?.includes('csv'))) {
+  // ── Reply inside an active upload conversation ────────────────────────
+  if (message.thread_ts && conversations[message.thread_ts]) {
+    const convo = conversations[message.thread_ts];
+
+    // They should reply with campaign name + CSV attached
     const csvFile = files.find(f => f.name?.endsWith('.csv') || f.mimetype?.includes('csv'));
 
-    // Need campaign name from message text
-    if (!text) {
+    if (!csvFile) {
       await client.chat.postMessage({
         channel: message.channel,
-        thread_ts: message.ts,
-        text: `📁 Got the CSV! Please re-upload it with a message telling me the campaign name. For example: *"upload to IFW Sharp"* (attach CSV)`,
+        thread_ts: message.thread_ts,
+        text: `Please make sure to attach the CSV file along with the campaign name.`,
       });
       return;
     }
 
+    if (!text) {
+      await client.chat.postMessage({
+        channel: message.channel,
+        thread_ts: message.thread_ts,
+        text: `Please include the campaign name in your message along with the CSV.`,
+      });
+      return;
+    }
+
+    // Got both — execute
+    delete conversations[message.thread_ts];
+
     await client.chat.postMessage({
       channel: message.channel,
-      thread_ts: message.ts,
+      thread_ts: message.thread_ts,
       text: `⏳ On it! Uploading *${csvFile.name}* now...`,
     });
 
     try {
-      // Use Claude to extract campaign name and whether it's new
-      const action = await parseIntent(text + ` [CSV file attached: ${csvFile.name}]`);
-      console.log('[Claude] Action:', JSON.stringify(action));
-
+      const action = await parseIntent(text + ` [CSV attached: ${csvFile.name}]`);
       const { uploadAndConfigure } = require('./actions/uploadAndConfigure');
       const result = await uploadAndConfigure({
         campaign_name: action.campaign_name,
@@ -59,21 +74,33 @@ app.message(async ({ message, client }) => {
 
       await client.chat.postMessage({
         channel: message.channel,
-        thread_ts: message.ts,
+        thread_ts: message.thread_ts,
         text: `✅ ${result.message}`,
       });
     } catch (err) {
       console.error('[Upload Error]', err.message);
       await client.chat.postMessage({
         channel: message.channel,
-        thread_ts: message.ts,
+        thread_ts: message.thread_ts,
         text: `❌ Something went wrong: \`${err.message}\``,
       });
     }
     return;
   }
 
-  // ── Regular message ───────────────────────────────────────────────────────
+  // ── User says "upload leads" — start conversation ─────────────────────
+  if (lower.includes('upload leads') || lower.includes('upload lead')) {
+    conversations[message.ts] = { channel: message.channel };
+
+    await client.chat.postMessage({
+      channel: message.channel,
+      thread_ts: message.ts,
+      text: `📋 Please reply with the campaign name and attach the CSV file in the same message.\n\nFor example: *"Kaden LTFC"* (with CSV attached)`,
+    });
+    return;
+  }
+
+  // ── Regular message ───────────────────────────────────────────────────
   await client.chat.postMessage({
     channel: message.channel,
     thread_ts: message.ts,
