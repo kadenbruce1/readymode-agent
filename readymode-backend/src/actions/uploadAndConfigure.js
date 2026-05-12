@@ -52,7 +52,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // ── INJECT FILE VIA CDP ───────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Injecting file via CDP into #leadfileuploadbutton...');
+    console.log('[uploadAndConfigure] Injecting file via CDP...');
     const { root } = await cdpSession.send('DOM.getDocument');
     const { nodeId } = await cdpSession.send('DOM.querySelector', {
       nodeId: root.nodeId,
@@ -67,14 +67,21 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     console.log('[uploadAndConfigure] File injected via CDP');
 
-    // Fire change event to trigger Readymode's upload handler
-    await page.evaluate(() => {
-      const input = document.querySelector('#leadfileuploadbutton');
-      if (input) {
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        console.log('change event fired on #leadfileuploadbutton');
+    // Call Readymode's upload handler directly: tmp.confirm_send(filename)
+    console.log('[uploadAndConfigure] Calling tmp.confirm_send...');
+    await page.evaluate((filename) => {
+      if (typeof tmp !== 'undefined' && tmp.confirm_send) {
+        tmp.confirm_send(filename);
+      } else {
+        // Fallback: trigger the onchange manually
+        const input = document.querySelector('#leadfileuploadbutton');
+        if (input) {
+          const event = new Event('change', { bubbles: true });
+          input.dispatchEvent(event);
+        }
       }
-    });
+    }, path.basename(tempPath));
+
     await page.waitForTimeout(2000);
 
     // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
