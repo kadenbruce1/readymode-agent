@@ -72,6 +72,19 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
+
+    // Log all select options for debugging
+    const allSelectOptions = await page.evaluate(() => {
+      const selects = document.querySelectorAll('select');
+      const result = [];
+      selects.forEach((s, i) => {
+        const opts = Array.from(s.options).map(o => o.text.trim()).filter(Boolean);
+        if (opts.length > 0) result.push(`select[${i}] id="${s.id}": ${opts.join(' | ')}`);
+      });
+      return result;
+    });
+    allSelectOptions.forEach(o => console.log(`[uploadAndConfigure] ${o}`));
+
     const campaignSelected = await page.evaluate((name) => {
       const selects = document.querySelectorAll('select');
       for (const select of selects) {
@@ -89,7 +102,7 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
       return null;
     }, campaign_name);
 
-    if (!campaignSelected) throw new Error(`Campaign "${campaign_name}" not found in dropdown`);
+    if (!campaignSelected) throw new Error(`Campaign "${campaign_name}" not found in dropdown — see select options logged above`);
     console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
     await page.waitForTimeout(500);
 
