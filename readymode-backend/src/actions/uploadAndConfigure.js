@@ -73,17 +73,32 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
-    // Wait for campaign dropdown to load AND have options populated
-    console.log('[uploadAndConfigure] Waiting for campaign dropdown to populate...');
-    await page.waitForFunction(() => {
-      const select = document.querySelector('#xcont-6 select[listof="campaigns"], #leadsendform select[listof="campaigns"], form[tagged="1"] select[listof="campaigns"]');
-      return select && select.options.length > 1;
-    }, { timeout: 20000 });
-    await page.waitForTimeout(500);
+    // The confirmation screen loads inside the lead_csv_postwindow iframe
+    console.log('[uploadAndConfigure] Looking for confirmation iframe...');
+    let confirmFrame = null;
+    for (let i = 0; i < 15; i++) {
+      for (const frame of page.frames()) {
+        try {
+          const sel = await frame.$('select[listof="campaigns"]');
+          if (sel) { confirmFrame = frame; break; }
+        } catch {}
+      }
+      if (confirmFrame) break;
+      await page.waitForTimeout(1000);
+      console.log(`[uploadAndConfigure] Polling for iframe... attempt ${i + 1}`);
+    }
+
+    if (!confirmFrame) throw new Error('Campaign dropdown not found in any frame');
+    console.log(`[uploadAndConfigure] Found campaign dropdown in frame: ${confirmFrame.name()}`);
+
+    // Wait for options to populate
+    await confirmFrame.waitForFunction(() => {
+      const s = document.querySelector('select[listof="campaigns"]');
+      return s && s.options.length > 1;
+    }, { timeout: 10000 });
     console.log('[uploadAndConfigure] Campaign dropdown populated');
 
-    const campaignSelected = await page.evaluate((name) => {
-      // Scope to the confirmation form only — not the hotbar session statebox
+    const campaignSelected = await confirmFrame.evaluate((name) => {
       const container = document.querySelector('#xcont-6') ||
                         document.querySelector('#leadsendform') ||
                         document.querySelector('form[tagged="1"]') ||
@@ -117,10 +132,9 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     if (channel_name) {
       console.log(`[uploadAndConfigure] Selecting channel: ${channel_name}`);
-      const channelSelected = await page.evaluate((name) => {
+      const channelSelected = await confirmFrame.evaluate((name) => {
         const selects = document.querySelectorAll('select');
         for (const select of selects) {
-          // Skip selects that already have a value matching the campaign
           const options = Array.from(select.options);
           const match = options.find(o =>
             o.text.toLowerCase().includes(name.toLowerCase()) ||
@@ -142,7 +156,7 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     // ── CLICK DONE - IMPORT LEADS ─────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await page.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
+    await confirmFrame.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
       .first()
       .click({ timeout: 10000 });
 
