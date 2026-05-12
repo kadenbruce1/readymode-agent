@@ -55,11 +55,9 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     if (!uploadFrame) throw new Error('Could not find lead_csv_postwindow iframe');
     console.log('[uploadAndConfigure] Got iframe');
 
-    // Use page-level CDP to find the file input inside the iframe
+    // Inject file via CDP piercing through iframes
     console.log('[uploadAndConfigure] Injecting file via CDP...');
     const { root } = await cdpSession.send('DOM.getDocument', { depth: -1, pierce: true });
-
-    // Search for #leadfileuploadbutton piercing through iframes
     const { nodeId } = await cdpSession.send('DOM.querySelector', {
       nodeId: root.nodeId,
       selector: '#leadfileuploadbutton',
@@ -73,20 +71,25 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     console.log('[uploadAndConfigure] File injected via CDP');
 
-    // Call tmp.confirm_send inside the iframe
-    console.log('[uploadAndConfigure] Calling tmp.confirm_send in iframe...');
+    // Call tmp.confirm_send — this triggers navigation so ignore context error
+    console.log('[uploadAndConfigure] Calling tmp.confirm_send...');
     await uploadFrame.evaluate((filename) => {
       if (typeof tmp !== 'undefined' && tmp.confirm_send) {
         tmp.confirm_send(filename);
       }
-    }, path.basename(tempPath));
+    }, path.basename(tempPath)).catch(e => {
+      console.log('[uploadAndConfigure] Expected navigation error:', e.message);
+    });
 
-    await page.waitForTimeout(2000);
+    // Wait for iframe to reload with field mapping screen
+    console.log('[uploadAndConfigure] Waiting for field mapping screen to load...');
+    await page.waitForTimeout(4000);
 
-    // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
+    // Get fresh frame reference after navigation
+    const fieldFrame = page.frame({ name: 'lead_csv_postwindow' });
+    if (!fieldFrame) throw new Error('Could not find field mapping frame after navigation');
 
-    console.log('[uploadAndConfigure] Waiting for field mapping screen...');
-    await uploadFrame.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
+    await fieldFrame.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
     console.log('[uploadAndConfigure] Field mapping screen loaded!');
 
     // ── SELECT CAMPAIGN ──────────────────────────────────────────────────
@@ -94,14 +97,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
     if (create_new_campaign) {
-      await uploadFrame.click('text=Add a New Campaign');
+      await fieldFrame.click('text=Add a New Campaign');
       await page.waitForTimeout(1000);
-      await uploadFrame.fill('input[type="text"]:visible', campaign_name);
+      await fieldFrame.fill('input[type="text"]:visible', campaign_name);
       await page.waitForTimeout(500);
-      await uploadFrame.click('button:has-text("OK"), input[value="OK"]');
+      await fieldFrame.click('button:has-text("OK"), input[value="OK"]');
       await page.waitForTimeout(1500);
     } else {
-      const matched = await uploadFrame.evaluate((name) => {
+      const matched = await fieldFrame.evaluate((name) => {
         const campaignSelect = document.querySelector('select[name="set[campaignId]"], select[listof="campaigns"]');
         if (campaignSelect) {
           const options = Array.from(campaignSelect.options);
@@ -140,7 +143,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     // ── IMPORT ───────────────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await uploadFrame.click('input[value="Done - Import leads"]');
+    await fieldFrame.click('input[value="Done - Import leads"]');
     await page.waitForTimeout(5000);
 
     // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
