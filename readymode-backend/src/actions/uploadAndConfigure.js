@@ -96,15 +96,37 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
     // ── EXECUTE SPAWN IN BROWSER TO LOAD CONFIRMATION SCREEN ─────────────
 
-    // The upload response script calls:
-    // fromContainer.content.executionContext.spawn('page_work', 'AI Leads/process/233')
-    // We need to execute this same call in the browser context
-    console.log(`[uploadAndConfigure] Spawning confirmation screen via page context...`);
+    // First make sure the Leads panel is open and xcont-5 is active
+    console.log('[uploadAndConfigure] Activating Leads panel...');
+    await page.evaluate(() => {
+      const links = document.querySelectorAll('a.dash_link');
+      for (const link of links) {
+        if ((link.getAttribute('href') || '').includes('AI Leads')) {
+          link.click();
+          return;
+        }
+      }
+    });
+    await page.waitForTimeout(3000);
 
+    // Wait for xcont-5 XC to be initialized
+    console.log('[uploadAndConfigure] Waiting for xcont-5 to initialize...');
+    await page.waitForFunction(() => {
+      try {
+        const el = document.querySelector('#xcont-5');
+        if (!el) return false;
+        const container = el.XCContainerObject;
+        return container && container.XC && container.XC.layout;
+      } catch { return false; }
+    }, { timeout: 15000 });
+    console.log('[uploadAndConfigure] xcont-5 initialized');
+
+    console.log(`[uploadAndConfigure] Spawning confirmation screen for process ${processId}...`);
     const spawned = await page.evaluate((pid) => {
       try {
-        const container = parent.$('#xcont-5').get(0).XCContainerObject;
-        if (!container) return 'ERROR: xcont-5 container not found';
+        const el = document.querySelector('#xcont-5');
+        const container = el.XCContainerObject;
+        if (!container) return 'ERROR: XCContainerObject not found';
         if (!container.XC) return 'ERROR: XC not on container';
         if (!container.XC.layout) return 'ERROR: XC.layout not found';
         container.content.executionContext.spawn('page_work', `AI Leads/process/${pid}`);
