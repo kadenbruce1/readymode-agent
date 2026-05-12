@@ -86,23 +86,29 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     allSelectOptions.forEach(o => console.log(`[uploadAndConfigure] ${o}`));
 
     const campaignSelected = await page.evaluate((name) => {
-      const selects = document.querySelectorAll('select');
-      for (const select of selects) {
-        const options = Array.from(select.options);
-        const match = options.find(o =>
-          o.text.toLowerCase().includes(name.toLowerCase()) ||
-          name.toLowerCase().includes(o.text.toLowerCase())
-        );
-        if (match) {
-          select.value = match.value;
-          select.dispatchEvent(new Event('change', { bubbles: true }));
-          return match.text;
+      // Target the campaign dropdown specifically by its listof attribute
+      const select = document.querySelector('select[listof="campaigns"]');
+      if (!select) return null;
+      const options = Array.from(select.options);
+      const match = options.find(o =>
+        o.text.toLowerCase().includes(name.toLowerCase()) ||
+        name.toLowerCase().includes(o.text.toLowerCase())
+      );
+      if (match) {
+        select.value = match.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+          tmp.CCS_Leads_CheckCampaign(select);
         }
+        return match.text;
       }
-      return null;
+      // Log available options if no match
+      return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
     }, campaign_name);
 
-    if (!campaignSelected) throw new Error(`Campaign "${campaign_name}" not found in dropdown — see select options logged above`);
+    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:')) {
+      throw new Error(`Campaign "${campaign_name}" not found. Available: ${campaignSelected}`);
+    }
     console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
     await page.waitForTimeout(500);
 
