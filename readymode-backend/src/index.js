@@ -1,4 +1,4 @@
-]require('dotenv').config();
+require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 const { parseIntent } = require('./claude');
 const { routeAction } = require('./router');
