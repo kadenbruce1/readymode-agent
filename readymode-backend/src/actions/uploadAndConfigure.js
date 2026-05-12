@@ -2,13 +2,12 @@ const { getStagehand } = require('../stagehand');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const FormData = require('form-data');
 const axios = require('axios');
 
-async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
+async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
   if (!campaign_name) throw new Error('campaign_name is required.');
   if (!file_url) throw new Error('file_url is required.');
-
-  // ── DOWNLOAD FILE FROM SLACK ──────────────────────────────────────────
 
   const tempPath = path.join(os.tmpdir(), `leads-${Date.now()}.csv`);
   await downloadFile(file_url, tempPath);
@@ -21,109 +20,113 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
   try {
 
-    // ── NAVIGATE TO READYMODE ─────────────────────────────────────────────
+    // ── GET SESSION COOKIES ───────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Navigating to Readymode...');
+    console.log('[uploadAndConfigure] Getting session cookies...');
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1500);
 
-    // ── OPEN LEAD MANAGEMENT PANEL ────────────────────────────────────────
+    const cookies = await page.context().cookies();
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    console.log(`[uploadAndConfigure] Got ${cookies.length} cookies`);
 
-    console.log('[uploadAndConfigure] Opening Lead Management panel...');
-    const leadsPanelOpened = await page.evaluate(() => {
-      const els = document.querySelectorAll('a, div, span, img');
-      for (const el of els) {
-        const title = (el.getAttribute('title') || '').toLowerCase();
-        const alt   = (el.getAttribute('alt')   || '').toLowerCase();
-        const text  = (el.textContent            || '').trim().toLowerCase();
-        if (title.includes('lead') || alt.includes('lead') || text === 'leads') {
-          el.click();
-          return true;
+    const baseUrl = process.env.READYMODE_URL;
+
+    // ── POST CSV DIRECTLY TO UPLOAD API ──────────────────────────────────
+
+    console.log('[uploadAndConfigure] Uploading CSV via API...');
+    const form = new FormData();
+    form.append('fromContainerId', 'xcont-5');
+    form.append('leadfile', fs.createReadStream(tempPath), {
+      filename: path.basename(tempPath),
+      contentType: 'text/csv',
+    });
+
+    const uploadResponse = await axios.post(
+      `${baseUrl}/AI%20Leads/upload/index.php`,
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'Cookie': cookieString,
+          'Referer': baseUrl,
+          'Origin': baseUrl,
+        },
+        maxRedirects: 5,
+      }
+    );
+
+    const responseText = String(uploadResponse.data);
+    console.log('[uploadAndConfigure] Upload response preview:', responseText.substring(0, 300));
+
+    const processMatch =
+      responseText.match(/AI Leads\/process\/(\d+)/) ||
+      responseText.match(/Leads\/process\/(\d+)/) ||
+      responseText.match(/process\/(\d+)/) ||
+      responseText.match(/spawn\([^,]+,\s*['"](?:AI Leads\/)?process\/(\d+)['"]/);
+
+    if (!processMatch) {
+      throw new Error(`Could not find process ID in response: ${responseText.substring(0, 300)}`);
+    }
+
+    const processId = processMatch[1];
+    console.log(`[uploadAndConfigure] Process ID: ${processId}`);
+
+    // ── NAVIGATE TO LEADS TAB ─────────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Clicking Leads tab...');
+    await page.evaluate(() => {
+      const links = document.querySelectorAll('a.dash_link');
+      for (const link of links) {
+        if (link.getAttribute('href') === '-AI Leads/pools') {
+          link.click();
+          return;
         }
       }
-      return false;
     });
+    await page.waitForTimeout(3000);
 
-    if (!leadsPanelOpened) {
-      await page.locator('[title*="Lead"], [alt*="Lead"]').first().click({ timeout: 5000 }).catch(() => {});
-    }
-    await page.waitForTimeout(2000);
+    // ── SET IFRAME TO FIELD MAPPING ───────────────────────────────────────
 
-    // ── CLICK UPLOAD LEADS (intercept file chooser) ───────────────────────
+    console.log(`[uploadAndConfigure] Navigating iframe to process ${processId}...`);
+    await page.evaluate((pid) => {
+      const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
+      if (iframe) iframe.src = `/AI%20Leads/process/${pid}`;
+    }, processId);
+    await page.waitForTimeout(3000);
 
-    console.log('[uploadAndConfigure] Clicking Upload Leads...');
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 10000 }),
-      page.locator('text=Upload Leads').first().click(),
-    ]);
+    // ── POLL FOR FIELD MAPPING SCREEN ─────────────────────────────────────
 
-    console.log(`[uploadAndConfigure] File chooser opened, attaching file...`);
-    await fileChooser.setFiles(tempPath);
-    console.log('[uploadAndConfigure] File attached');
-
-    // The file input is inside #leadsendform which submits to load the confirmation screen
-    // fileChooser.setFiles() sets the value but doesn't auto-submit — trigger it manually
-    await page.waitForTimeout(1000);
-    console.log('[uploadAndConfigure] Triggering form submission...');
-    const submitted = await page.evaluate(() => {
-      const input = document.querySelector('#leadsendform input[type="file"]');
-      if (input) {
-        // Trigger change event which Readymode listens to for auto-submit
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return 'change event fired';
+    console.log('[uploadAndConfigure] Polling for field mapping screen...');
+    let fieldFrame = null;
+    for (let i = 0; i < 25; i++) {
+      for (const frame of page.frames()) {
+        try {
+          const btn = await frame.$('input[value="Done - Import leads"]');
+          if (btn) { fieldFrame = frame; break; }
+        } catch {}
       }
-      // Fallback: submit the form directly
-      const form = document.querySelector('#leadsendform');
-      if (form) { form.submit(); return 'form submitted'; }
-      return 'nothing found';
-    });
-    console.log(`[uploadAndConfigure] Submission trigger: ${submitted}`);
+      if (fieldFrame) break;
+      await page.waitForTimeout(1000);
+      console.log(`[uploadAndConfigure] Polling... attempt ${i + 1}`);
+    }
 
-    // ── WAIT FOR UPLOAD CONFIRMATION SCREEN ──────────────────────────────
-
-    console.log('[uploadAndConfigure] Waiting for upload confirmation screen...');
-    // Wait for the campaign select to be populated (confirms confirmation screen is ready)
-    await page.waitForFunction(() => {
-      const s = document.querySelector('select[listof="campaigns"]');
-      return s && s.options.length > 1;
-    }, { timeout: 60000 });
-    console.log('[uploadAndConfigure] Confirmation screen loaded');
-    await page.waitForTimeout(500);
+    if (!fieldFrame) throw new Error('Field mapping screen never appeared after 25s');
+    console.log(`[uploadAndConfigure] Field mapping loaded in frame: ${fieldFrame.name()}`);
 
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
-    const campaignSelected = await page.evaluate((name) => {
-      const select = document.querySelector('select[listof="campaigns"]');
-      if (!select) return 'ERROR: select not found';
-      const options = Array.from(select.options);
-      const match = options.find(o =>
-        o.text.trim().toLowerCase().includes(name.toLowerCase()) ||
-        name.toLowerCase().includes(o.text.trim().toLowerCase())
-      );
-      if (match) {
-        select.value = match.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
-          tmp.CCS_Leads_CheckCampaign(select);
-        }
-        return match.text.trim();
-      }
-      return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
-    }, campaign_name);
-
-    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
-      throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
-    }
-    console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
-    await page.waitForTimeout(500);
-
-    // ── SELECT CHANNEL (optional) ─────────────────────────────────────────
-
-    if (channel_name) {
-      console.log(`[uploadAndConfigure] Selecting channel: ${channel_name}`);
-      const channelSelected = await page.evaluate((name) => {
+    if (create_new_campaign) {
+      await fieldFrame.click('text=Add a New Campaign');
+      await page.waitForTimeout(1000);
+      await fieldFrame.fill('input[type="text"]:visible', campaign_name);
+      await page.waitForTimeout(500);
+      await fieldFrame.click('button:has-text("OK"), input[value="OK"]');
+      await page.waitForTimeout(1500);
+    } else {
+      const matched = await fieldFrame.evaluate((name) => {
         const selects = document.querySelectorAll('select');
         for (const select of selects) {
           const options = Array.from(select.options);
@@ -131,38 +134,175 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
             o.text.toLowerCase().includes(name.toLowerCase()) ||
             name.toLowerCase().includes(o.text.toLowerCase())
           );
-          if (match && select.options[select.selectedIndex]?.text !== match.text) {
+          if (match) {
             select.value = match.value;
             select.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+              tmp.CCS_Leads_CheckCampaign(select);
+            }
             return match.text;
           }
         }
         return null;
-      }, channel_name);
+      }, campaign_name);
 
-      console.log(`[uploadAndConfigure] Channel: ${channelSelected || 'not found, using default'}`);
-      await page.waitForTimeout(500);
+      if (!matched) throw new Error(`Campaign "${campaign_name}" not found in dropdown`);
+      console.log(`[uploadAndConfigure] Campaign matched: ${matched}`);
+      await page.waitForTimeout(1000);
     }
 
-    // ── CLICK DONE - IMPORT LEADS ─────────────────────────────────────────
+    // ── CLICK IMPORT ──────────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await page.locator('button:has-text("Done - Import leads"), input[value="Done - Import leads"]')
-      .first()
-      .click({ timeout: 10000 });
+    await fieldFrame.click('input[value="Done - Import leads"]');
 
-    console.log('[uploadAndConfigure] Waiting 5s for import to process...');
-    await page.waitForTimeout(5000);
+    // Readymode fires import as background XHR — flat 8s wait is enough
+    console.log('[uploadAndConfigure] Waiting 8s for import to process...');
+    await page.waitForTimeout(8000);
+    console.log('[uploadAndConfigure] Import wait complete');
 
-    const stillOnConfirmation = await page.$('text=Lead upload confirmation').catch(() => null);
-    if (!stillOnConfirmation) {
-      console.log('[uploadAndConfigure] ✅ Import complete — confirmation screen closed');
-    } else {
-      console.log('[uploadAndConfigure] Import submitted');
+    // ── NAVIGATE TO CAMPAIGNS TAB ─────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Navigating to Campaigns tab...');
+    const campaignTabClicked = await page.evaluate(() => {
+      const anchors = document.querySelectorAll('ul.ui-tabs-nav a, #tabs a, .ui-tabs a');
+      for (const a of anchors) {
+        if (a.textContent.trim().toLowerCase() === 'campaigns') {
+          a.click();
+          return true;
+        }
+      }
+      const allLinks = document.querySelectorAll('a');
+      for (const a of allLinks) {
+        const href = (a.getAttribute('href') || '').toLowerCase();
+        const text = a.textContent.trim().toLowerCase();
+        if (text === 'campaigns' || href.includes('campaigns')) {
+          a.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!campaignTabClicked) {
+      await page.locator('a:has-text("Campaigns")').first().click({ timeout: 10000 });
+    }
+    await page.waitForTimeout(3000);
+
+    // ── FIND AND OPEN CAMPAIGN ────────────────────────────────────────────
+
+    console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
+    let campItem = null;
+    for (let i = 0; i < 15; i++) {
+      campItem = page.locator(`#campaign_list li`).filter({ hasText: campaign_name }).first();
+      const count = await campItem.count();
+      if (count > 0) break;
+      await page.waitForTimeout(1000);
+      console.log(`[uploadAndConfigure] Waiting for campaign list... attempt ${i + 1}`);
     }
 
+    if (!campItem || await campItem.count() === 0) {
+      throw new Error(`Campaign "${campaign_name}" not found in campaign list`);
+    }
+
+    await campItem.click();
+    await page.waitForTimeout(3000);
+    console.log('[uploadAndConfigure] Campaign opened');
+
+    // ── PHONE GROUPS: CHECK ALL ───────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Assigning phone groups...');
+    try {
+      const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
+      await phoneGroupBtn.waitFor({ timeout: 8000 });
+      await phoneGroupBtn.click();
+      await page.waitForTimeout(1000);
+
+      const checkAllClicked = await page.evaluate(() => {
+        const candidates = [
+          document.querySelector('a.ui-multiselect-all'),
+          ...[...document.querySelectorAll('a')].filter(a => a.textContent.trim().toLowerCase() === 'check all'),
+        ];
+        for (const el of candidates) {
+          if (el) { el.click(); return true; }
+        }
+        return false;
+      });
+
+      if (!checkAllClicked) {
+        await page.locator('text=Check All').first().click({ timeout: 5000 });
+      }
+
+      await page.waitForTimeout(800);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadAndConfigure] Phone groups: all checked');
+    } catch (e) {
+      console.log(`[uploadAndConfigure] Phone groups step failed (non-fatal): ${e.message}`);
+    }
+
+    // ── CALL RESULTS: CHECK ALL, THEN UNCHECK 4 ──────────────────────────
+
+    console.log('[uploadAndConfigure] Configuring call results...');
+    try {
+      const callResultBtn = page.locator('button.ui-multiselect').nth(1);
+      await callResultBtn.waitFor({ timeout: 8000 });
+      await callResultBtn.click();
+      await page.waitForTimeout(1000);
+
+      const checkAllClicked = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('a.ui-multiselect-all, a')];
+        const target = all.find(a =>
+          a.classList.contains('ui-multiselect-all') ||
+          a.textContent.trim().toLowerCase() === 'check all'
+        );
+        if (target) { target.click(); return true; }
+        return false;
+      });
+
+      if (!checkAllClicked) {
+        await page.locator('text=Check All').first().click({ timeout: 5000 });
+      }
+
+      await page.waitForTimeout(800);
+
+      const excluded = ['CS Log', 'Transfer', 'Not Available', 'Not in Service'];
+      for (const item of excluded) {
+        try {
+          const label = page.locator(`.ui-multiselect-menu label`).filter({ hasText: item }).first();
+          const labelCount = await label.count();
+          if (labelCount > 0) {
+            const cb = label.locator('input[type="checkbox"]');
+            const isChecked = await cb.isChecked().catch(() => false);
+            if (isChecked) {
+              await label.click();
+              await page.waitForTimeout(300);
+              console.log(`[uploadAndConfigure] Unchecked: ${item}`);
+            } else {
+              console.log(`[uploadAndConfigure] "${item}" already unchecked`);
+            }
+          }
+        } catch (e) {
+          console.log(`[uploadAndConfigure] Could not uncheck "${item}": ${e.message}`);
+        }
+      }
+
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadAndConfigure] Call results configured');
+    } catch (e) {
+      console.log(`[uploadAndConfigure] Call results step failed (non-fatal): ${e.message}`);
+    }
+
+    // ── CLOSE ACCORDION ───────────────────────────────────────────────────
+
+    try {
+      await page.click('img.closer.accordion-container-closer', { timeout: 3000 });
+      await page.waitForTimeout(1000);
+    } catch {}
+
     return {
-      message: `✅ Leads uploaded to campaign *${campaignSelected}*${channel_name ? ` via channel *${channel_name}*` : ''}.`,
+      message: `✅ Leads uploaded to *${campaign_name}*${create_new_campaign ? ' (new campaign created)' : ''}. Phone groups assigned and call results configured.`,
     };
 
   } finally {
