@@ -54,18 +54,27 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       }
     );
 
-    // Extract process ID from response
-    const processMatch = uploadResponse.data.match(/AI Leads\/process\/(\d+)/);
-    if (!processMatch) throw new Error('Could not find process ID in upload response');
+    // Log first 500 chars of response to see what we get
+    const responseText = String(uploadResponse.data);
+    console.log('[uploadAndConfigure] Upload response preview:', responseText.substring(0, 500));
+
+    // Try multiple patterns to find the process ID
+    const processMatch =
+      responseText.match(/AI Leads\/process\/(\d+)/) ||
+      responseText.match(/Leads\/process\/(\d+)/) ||
+      responseText.match(/process\/(\d+)/) ||
+      responseText.match(/spawn\([^,]+,\s*['"](?:AI Leads\/)?process\/(\d+)['"]/);
+
+    if (!processMatch) {
+      throw new Error(`Could not find process ID in response: ${responseText.substring(0, 300)}`);
+    }
 
     const processId = processMatch[1];
     console.log(`[uploadAndConfigure] Process ID: ${processId}`);
 
     // ── NAVIGATE TO FIELD MAPPING PAGE ───────────────────────────────────
 
-    console.log('[uploadAndConfigure] Navigating to field mapping page...');
-
-    // Click Leads to load the Leads section first
+    console.log('[uploadAndConfigure] Clicking Leads...');
     await page.evaluate(() => {
       const links = document.querySelectorAll('a.dash_link');
       for (const link of links) {
@@ -77,9 +86,9 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    // Now navigate to the process page inside the leads section
+    // Navigate the iframe directly to the process page
+    console.log(`[uploadAndConfigure] Navigating iframe to process ${processId}...`);
     await page.evaluate((pid) => {
-      // Find the lead_csv_postwindow iframe and navigate it
       const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
       if (iframe) {
         iframe.src = `/AI%20Leads/process/${pid}`;
@@ -87,9 +96,9 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     }, processId);
     await page.waitForTimeout(3000);
 
-    // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
+    // ── POLL ALL FRAMES FOR FIELD MAPPING SCREEN ─────────────────────────
 
-    console.log('[uploadAndConfigure] Waiting for field mapping screen...');
+    console.log('[uploadAndConfigure] Polling for field mapping screen...');
     let fieldFrame = null;
     for (let i = 0; i < 20; i++) {
       for (const frame of page.frames()) {
@@ -97,7 +106,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
           const btn = await frame.$('input[value="Done - Import leads"]');
           if (btn) {
             fieldFrame = frame;
-            console.log(`[uploadAndConfigure] Found field mapping in frame: ${frame.name()}`);
+            console.log(`[uploadAndConfigure] Found in frame: ${frame.name()}`);
             break;
           }
         } catch {}
