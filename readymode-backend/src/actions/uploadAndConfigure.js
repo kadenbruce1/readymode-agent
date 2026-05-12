@@ -34,6 +34,8 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     console.log(`[uploadAndConfigure] Got ${cookies.length} cookies`);
 
+    const baseUrl = process.env.READYMODE_URL;
+
     // ── OPEN LEAD MANAGEMENT PANEL ────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Opening Lead Management panel...');
@@ -50,107 +52,82 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── INTERCEPT THE UPLOAD REQUEST ─────────────────────────────────────
-    // Let a real fileChooser trigger happen to capture the real upload URL
-    // and form fields, then fulfill it normally but also replay with our file.
+    // ── UPLOAD CSV VIA AXIOS ──────────────────────────────────────────────
 
-    let capturedUploadUrl = null;
-    let capturedPostData = null;
-    let capturedHeaders = null;
-
-    await page.route('**/*', async (route) => {
-      const request = route.request();
-      if (request.method() === 'POST') {
-        const url = request.url();
-        console.log(`[uploadAndConfigure] POST intercepted: ${url}`);
-        capturedUploadUrl = url;
-        capturedHeaders = request.headers();
-        capturedPostData = request.postDataBuffer();
-        await route.continue();
-      } else {
-        await route.continue();
-      }
+    console.log('[uploadAndConfigure] Uploading CSV via API...');
+    const form = new FormData();
+    form.append('fromContainerId', 'xcont-5');
+    form.append('leadfile', fs.createReadStream(tempPath), {
+      filename: path.basename(tempPath),
+      contentType: 'text/csv',
     });
 
-    // Trigger file chooser with our actual file
-    console.log('[uploadAndConfigure] Triggering file upload...');
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 15000 }),
-      page.locator('text=Upload Leads').first().click(),
-    ]);
+    const uploadResponse = await axios.post(
+      `${baseUrl}/AI%20Leads/upload/index.php`,
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'Cookie': cookieString,
+          'Referer': baseUrl,
+          'Origin': baseUrl,
+        },
+        maxRedirects: 5,
+      }
+    );
 
-    await fileChooser.setFiles(tempPath);
-    console.log('[uploadAndConfigure] File set via fileChooser');
+    const responseText = String(uploadResponse.data);
+    console.log('[uploadAndConfigure] Upload response preview:', responseText.substring(0, 300));
 
-    // Wait to see if any POST fires automatically after file selection
-    await page.waitForTimeout(3000);
-    console.log(`[uploadAndConfigure] Auto-POST captured: ${capturedUploadUrl || 'none'}`);
+    // Extract process ID from spawn call in response
+    // Response contains: spawn('page_work', 'AI Leads/process/233')
+    const processMatch =
+      responseText.match(/spawn\s*\([^,]+,\s*['"]AI Leads\/process\/(\d+)['"]/i) ||
+      responseText.match(/spawn\s*\([^,]+,\s*['"](?:AI%20Leads|AI Leads)\/process\/(\d+)['"]/i) ||
+      responseText.match(/AI[% ](?:20)?Leads\/process\/(\d+)/) ||
+      responseText.match(/process\/(\d+)/);
 
-    // If no auto-POST, submit the form manually
-    if (!capturedUploadUrl) {
-      console.log('[uploadAndConfigure] No auto-POST — submitting form manually...');
-      await page.evaluate(() => {
-        const form = document.querySelector('#leadsendform');
-        if (form) {
-          if (form.requestSubmit) form.requestSubmit();
-          else form.submit();
-        }
-      });
-      await page.waitForTimeout(3000);
-      console.log(`[uploadAndConfigure] POST after manual submit: ${capturedUploadUrl || 'still none'}`);
+    if (!processMatch) {
+      throw new Error(`Could not find process ID in response: ${responseText.substring(0, 300)}`);
     }
 
-    // Remove route interceptor
-    await page.unroute('**/*');
+    const processId = processMatch[1];
+    console.log(`[uploadAndConfigure] Process ID: ${processId}`);
 
-    // ── IF WE CAPTURED THE URL, REPLAY WITH AXIOS ────────────────────────
+    // ── EXECUTE SPAWN IN BROWSER TO LOAD CONFIRMATION SCREEN ─────────────
 
-    if (capturedUploadUrl) {
-      console.log(`[uploadAndConfigure] Replaying upload to: ${capturedUploadUrl}`);
-      const form = new FormData();
-      form.append('leadfile', fs.createReadStream(tempPath), {
-        filename: path.basename(tempPath),
-        contentType: 'text/csv',
-      });
+    // The upload response script calls:
+    // fromContainer.content.executionContext.spawn('page_work', 'AI Leads/process/233')
+    // We need to execute this same call in the browser context
+    console.log(`[uploadAndConfigure] Spawning confirmation screen via page context...`);
 
-      // Add any non-file form fields from the captured post data if possible
+    const spawned = await page.evaluate((pid) => {
       try {
-        const replayResponse = await axios.post(capturedUploadUrl, form, {
-          headers: {
-            ...form.getHeaders(),
-            'Cookie': cookieString,
-            'Referer': process.env.READYMODE_URL,
-            'Origin': process.env.READYMODE_URL,
-          },
-          maxRedirects: 5,
-        });
-        console.log(`[uploadAndConfigure] Replay response (${replayResponse.status}): ${String(replayResponse.data).substring(0, 300)}`);
+        const container = parent.$('#xcont-5').get(0).XCContainerObject;
+        if (!container) return 'ERROR: xcont-5 container not found';
+        if (!container.XC) return 'ERROR: XC not on container';
+        if (!container.XC.layout) return 'ERROR: XC.layout not found';
+        container.content.executionContext.spawn('page_work', `AI Leads/process/${pid}`);
+        return `OK: spawned AI Leads/process/${pid}`;
       } catch (e) {
-        console.log(`[uploadAndConfigure] Replay failed: ${e.message}`);
+        return `ERROR: ${e.message}`;
       }
+    }, processId);
+
+    console.log(`[uploadAndConfigure] Spawn result: ${spawned}`);
+
+    if (spawned.startsWith('ERROR')) {
+      throw new Error(`Spawn failed: ${spawned}`);
     }
 
     // ── WAIT FOR CAMPAIGN DROPDOWN TO POPULATE ────────────────────────────
 
-    console.log('[uploadAndConfigure] Waiting for confirmation screen...');
-    try {
-      await page.waitForFunction(() => {
-        const s = document.querySelector('select[listof="campaigns"]');
-        return s && s.options.length > 1;
-      }, { timeout: 30000 });
-      console.log('[uploadAndConfigure] Confirmation screen loaded');
-    } catch (e) {
-      // Log iframe state for debugging
-      const iframeContent = await page.evaluate(() => {
-        const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
-        if (!iframe) return 'no iframe';
-        try {
-          return iframe.contentDocument?.body?.innerHTML?.substring(0, 300) || 'empty';
-        } catch { return 'cross-origin blocked'; }
-      });
-      console.log(`[uploadAndConfigure] Iframe content: ${iframeContent}`);
-      throw new Error(`Confirmation screen never loaded: ${e.message}`);
-    }
+    console.log('[uploadAndConfigure] Waiting for confirmation screen to load...');
+    await page.waitForFunction(() => {
+      const s = document.querySelector('select[listof="campaigns"]');
+      return s && s.options.length > 1;
+    }, { timeout: 30000 });
+    console.log('[uploadAndConfigure] Confirmation screen loaded');
     await page.waitForTimeout(500);
 
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
