@@ -109,14 +109,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    // Wait for xcont-5 XC to be initialized
+    // Wait for xcont-5 XCContainerObject to be initialized
     console.log('[uploadAndConfigure] Waiting for xcont-5 to initialize...');
     await page.waitForFunction(() => {
       try {
         const el = document.querySelector('#xcont-5');
         if (!el) return false;
         const container = el.XCContainerObject;
-        return container && container.XC && container.XC.layout;
+        return container && container.content && container.content.executionContext;
       } catch { return false; }
     }, { timeout: 15000 });
     console.log('[uploadAndConfigure] xcont-5 initialized');
@@ -125,10 +125,11 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     const spawned = await page.evaluate((pid) => {
       try {
         const el = document.querySelector('#xcont-5');
+        if (!el) return 'ERROR: #xcont-5 not found';
         const container = el.XCContainerObject;
         if (!container) return 'ERROR: XCContainerObject not found';
-        if (!container.XC) return 'ERROR: XC not on container';
-        if (!container.XC.layout) return 'ERROR: XC.layout not found';
+        if (!container.content) return 'ERROR: container.content not found';
+        if (!container.content.executionContext) return 'ERROR: executionContext not found';
         container.content.executionContext.spawn('page_work', `AI Leads/process/${pid}`);
         return `OK: spawned AI Leads/process/${pid}`;
       } catch (e) {
