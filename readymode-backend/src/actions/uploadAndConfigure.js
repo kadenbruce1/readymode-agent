@@ -64,7 +64,8 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     // ── WAIT FOR UPLOAD CONFIRMATION SCREEN ──────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for upload confirmation screen...');
-    await page.waitForSelector('text=Lead upload confirmation', { timeout: 15000 });
+    // The h1 "Lead upload confirmation" is display:none — wait for the form instead
+    await page.waitForSelector('form[method="post"][tagged="1"]', { timeout: 90000 });
     console.log('[uploadAndConfigure] Confirmation screen loaded');
     await page.waitForTimeout(1500);
 
