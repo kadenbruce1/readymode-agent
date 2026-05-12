@@ -19,20 +19,25 @@ async function setDialerSpeed({ member_name, speed }) {
       console.log(`[setDialerSpeed] Checking page ${pageNum}...`);
       await page.waitForTimeout(1500);
 
-      const userRow = page.locator(`tr:has-text("${member_name}")`).first();
-      const isVisible = await userRow.isVisible().catch(() => false);
+      // Find the name anchor with exact text
+      const nameAnchor = page.locator(`a.dp_profile_anchor_title:has-text("${member_name}")`).first();
+      const isVisible = await nameAnchor.isVisible().catch(() => false);
 
       if (isVisible) {
         found = true;
-        await userRow.scrollIntoViewIfNeeded();
-        await page.waitForTimeout(500);
+        console.log(`[setDialerSpeed] Found ${member_name}`);
 
-        // Hover over the CPA anchor to trigger dropdown
-        const cpaAnchor = userRow.locator('a.dp_profile_anchor').first();
+        // Get the dpid from this anchor
+        const dpid = await nameAnchor.getAttribute('dpid');
+        console.log(`[setDialerSpeed] dpid: ${dpid}`);
+
+        // Hover over the CPA anchor for this user (same dpid)
+        const cpaAnchor = page.locator(`a.dp_profile_anchor[dp="${dpid}"]`).first();
+        await cpaAnchor.scrollIntoViewIfNeeded();
         await cpaAnchor.hover();
         await page.waitForTimeout(1000);
 
-        // Click the menu item with matching config value (speed number)
+        // Click the speed option from the dropdown
         await page.click(`a[role="menuitem"][config="${speedNum}"]`);
         await page.waitForTimeout(2000);
 
