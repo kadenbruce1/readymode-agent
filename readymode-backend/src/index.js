@@ -120,27 +120,13 @@ async function handleConversationReply(message, client, text) {
 
   if (convo.step === 'ask_campaign_name') {
     convo.campaignName = text.trim();
-    convo.step = 'ask_states';
-    await client.chat.postMessage({
-      channel: message.channel,
-      thread_ts: message.thread_ts,
-      text: `Any state filters? List them (e.g. "FL, TX, GA") or say *no*.`,
-    });
-    return;
-  }
 
-  if (convo.step === 'ask_states') {
-    if (lower === 'no' || lower === 'none' || lower === 'n/a') {
-      convo.states = [];
-    } else {
-      convo.states = text.split(/[,\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-    }
-
+    // All questions answered — execute
     convo.step = 'executing';
     await client.chat.postMessage({
       channel: convo.channel,
       thread_ts: convo.threadTs,
-      text: `⏳ Uploading *${convo.fileName}* to *${convo.campaignName}*${convo.createNew ? ' (new campaign)' : ''}${convo.states.length > 0 ? ` | States: ${convo.states.join(', ')}` : ''}. This may take a minute...`,
+      text: `⏳ Uploading *${convo.fileName}* to *${convo.campaignName}*${convo.createNew ? ' (new campaign)' : ''}. This may take a minute...`,
     });
 
     try {
@@ -149,7 +135,6 @@ async function handleConversationReply(message, client, text) {
         campaign_name: convo.campaignName,
         file_url: convo.fileUrl,
         create_new_campaign: convo.createNew,
-        states: convo.states,
       });
 
       await client.chat.postMessage({
