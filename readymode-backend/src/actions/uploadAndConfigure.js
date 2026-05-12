@@ -13,7 +13,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   await downloadFile(file_url, tempPath);
 
   const { stagehand, page } = await getStagehand();
-  const cdpSession = await page.context().newCDPSession(page);
 
   try {
 
@@ -50,35 +49,35 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── INJECT FILE VIA CDP ───────────────────────────────────────────────
+    // ── GET THE IFRAME CONTEXT ────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Injecting file via CDP...');
+    console.log('[uploadAndConfigure] Getting lead_csv_postwindow frame...');
+    const uploadFrame = page.frame({ name: 'lead_csv_postwindow' });
+    if (!uploadFrame) throw new Error('Could not find lead_csv_postwindow iframe');
+    console.log('[uploadAndConfigure] Got iframe context');
+
+    // ── INJECT FILE VIA CDP INTO IFRAME ───────────────────────────────────
+
+    const cdpSession = await uploadFrame.createCDPSession();
     const { root } = await cdpSession.send('DOM.getDocument');
     const { nodeId } = await cdpSession.send('DOM.querySelector', {
       nodeId: root.nodeId,
       selector: '#leadfileuploadbutton',
     });
 
-    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton');
+    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton in iframe');
 
     await cdpSession.send('DOM.setFileInputFiles', {
       files: [tempPath],
       nodeId,
     });
-    console.log('[uploadAndConfigure] File injected via CDP');
+    console.log('[uploadAndConfigure] File injected via CDP into iframe');
 
-    // Call Readymode's upload handler directly: tmp.confirm_send(filename)
-    console.log('[uploadAndConfigure] Calling tmp.confirm_send...');
-    await page.evaluate((filename) => {
+    // Call tmp.confirm_send inside the iframe context
+    console.log('[uploadAndConfigure] Calling tmp.confirm_send in iframe...');
+    await uploadFrame.evaluate((filename) => {
       if (typeof tmp !== 'undefined' && tmp.confirm_send) {
         tmp.confirm_send(filename);
-      } else {
-        // Fallback: trigger the onchange manually
-        const input = document.querySelector('#leadfileuploadbutton');
-        if (input) {
-          const event = new Event('change', { bubbles: true });
-          input.dispatchEvent(event);
-        }
       }
     }, path.basename(tempPath));
 
@@ -87,7 +86,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for field mapping screen...');
-    await page.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
+    await uploadFrame.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
     console.log('[uploadAndConfigure] Field mapping screen loaded!');
 
     // ── SELECT CAMPAIGN ──────────────────────────────────────────────────
@@ -95,14 +94,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
     if (create_new_campaign) {
-      await page.click('text=Add a New Campaign');
+      await uploadFrame.click('text=Add a New Campaign');
       await page.waitForTimeout(1000);
-      await page.fill('input[type="text"]:visible', campaign_name);
+      await uploadFrame.fill('input[type="text"]:visible', campaign_name);
       await page.waitForTimeout(500);
-      await page.click('button:has-text("OK"), input[value="OK"]');
+      await uploadFrame.click('button:has-text("OK"), input[value="OK"]');
       await page.waitForTimeout(1500);
     } else {
-      const matched = await page.evaluate((name) => {
+      const matched = await uploadFrame.evaluate((name) => {
         const campaignSelect = document.querySelector('select[name="set[campaignId]"], select[listof="campaigns"]');
         if (campaignSelect) {
           const options = Array.from(campaignSelect.options);
@@ -141,7 +140,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     // ── IMPORT ───────────────────────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Clicking Done - Import leads...');
-    await page.click('input[value="Done - Import leads"]');
+    await uploadFrame.click('input[value="Done - Import leads"]');
     await page.waitForTimeout(5000);
 
     // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
@@ -195,12 +194,13 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1000);
     } catch {}
 
+    await cdpSession.detach().catch(() => {});
+
     return {
       message: `Leads uploaded to *${campaign_name}*${create_new_campaign ? ' (new campaign created)' : ''}. Phone groups assigned and call results configured.`,
     };
 
   } finally {
-    await cdpSession.detach().catch(() => {});
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
