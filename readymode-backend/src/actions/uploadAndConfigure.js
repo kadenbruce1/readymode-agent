@@ -1,6 +1,4 @@
 const { getStagehand } = require('../stagehand');
-const https = require('https');
-const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -13,6 +11,11 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 
   const tempPath = path.join(os.tmpdir(), `leads-${Date.now()}.csv`);
   await downloadFile(file_url, tempPath);
+
+  // Verify file size
+  const fileSize = fs.statSync(tempPath).size;
+  console.log(`[uploadAndConfigure] Downloaded file size: ${fileSize} bytes`);
+  if (fileSize < 100) throw new Error(`Downloaded file too small (${fileSize} bytes) — Slack download may have failed`);
 
   const { stagehand, page } = await getStagehand();
 
@@ -54,7 +57,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       }
     );
 
-    // Log first 500 chars of response to see what we get
     const responseText = String(uploadResponse.data);
     console.log('[uploadAndConfigure] Upload response preview:', responseText.substring(0, 500));
 
@@ -86,7 +88,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    // Navigate the iframe directly to the process page
     console.log(`[uploadAndConfigure] Navigating iframe to process ${processId}...`);
     await page.evaluate((pid) => {
       const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
@@ -222,19 +223,21 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
 }
 
 async function downloadFile(url, destPath) {
+  const response = await axios({
+    method: 'GET',
+    url: url,
+    responseType: 'stream',
+    headers: {
+      'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+    },
+    maxRedirects: 5,
+  });
+
   return new Promise((resolve, reject) => {
-    const protocol = url.startsWith('https') ? https : http;
-    const options = {
-      headers: { 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-    };
-    const file = fs.createWriteStream(destPath);
-    protocol.get(url, options, (res) => {
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(); });
-    }).on('error', (err) => {
-      fs.unlink(destPath, () => {});
-      reject(err);
-    });
+    const writer = fs.createWriteStream(destPath);
+    response.data.pipe(writer);
+    writer.on('finish', resolve);
+    writer.on('error', reject);
   });
 }
 
