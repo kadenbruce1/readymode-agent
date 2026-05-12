@@ -61,6 +61,16 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     await fileChooser.setFiles(tempPath);
     console.log('[uploadAndConfigure] File attached');
 
+    // After file attach, the form needs to be submitted to load the confirmation screen
+    // Wait a moment for the file to be registered then submit
+    await page.waitForTimeout(2000);
+    console.log('[uploadAndConfigure] Submitting upload form...');
+    await page.evaluate(() => {
+      const form = document.querySelector('#leadsendform');
+      if (form) form.submit();
+    });
+    await page.waitForTimeout(3000);
+
     // ── WAIT FOR UPLOAD CONFIRMATION SCREEN ──────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for upload confirmation screen...');
