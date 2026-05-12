@@ -9,20 +9,17 @@ Key terminology:
 - CAMPAIGN = a lead list inside Readymode
 - PLAYLIST = a user-level collection of campaigns assigned to a specific agent/member
 - MEMBERS = agents/users in Readymode
-- DIDs = outbound phone numbers assigned to a campaign
 - DEFAULT CAMPAIGNS for new users = IFWCT, IFW Sharp, Paragon CT
 - Normal dialer speed = 5. Slow dialing = increase to 8 unless told otherwise.
 
 Available actions:
 
 1. upload_leads
-   - campaign_name: string
-   - file_url: string (URL to CSV)
-   - create_new_campaign: boolean (default false)
+   - campaign_name: string (the campaign to upload leads into)
+   - create_new_campaign: boolean (true only if they say "new campaign" or "create campaign")
 
 2. configure_campaign
    - campaign_name: string
-   - script_name: string (optional)
    - assign_all_dids: boolean (default true)
 
 3. add_campaign_to_playlist
@@ -36,7 +33,7 @@ Available actions:
 
 5. set_state_filter
    - member_name: string
-   - states: array of state names or abbreviations
+   - states: array
 
 6. set_dialer_speed
    - member_name: string
@@ -48,12 +45,15 @@ Available actions:
 8. unknown
    - message: string
 
-Examples:
+Be smart about interpreting requests. Examples:
+"upload to kaden ltfc" → {"action":"upload_leads","campaign_name":"Kaden LTFC","create_new_campaign":false}
+"upload these leads to IFW Sharp" → {"action":"upload_leads","campaign_name":"IFW Sharp","create_new_campaign":false}
+"new campaign called Test Drive" → {"action":"upload_leads","campaign_name":"Test Drive","create_new_campaign":true}
+"add to existing campaign paragon ct" → {"action":"upload_leads","campaign_name":"Paragon CT","create_new_campaign":false}
 "John's dialer is slow" → {"action":"set_dialer_speed","member_name":"John","speed":8}
 "Create a playlist for Sarah with FL and TX" → {"action":"create_playlist","member_name":"Sarah","campaigns":["IFWCT","IFW Sharp","Paragon CT"],"states":["FL","TX"]}
 "Add IFWCT to Mike's playlist" → {"action":"add_campaign_to_playlist","member_name":"Mike","campaign_name":"IFWCT"}
-"Remove Sarah's playlist" → {"action":"remove_playlist","member_name":"Sarah"}
-"Upload leads from https://example.com/leads.csv to IFW Sharp" → {"action":"upload_leads","campaign_name":"IFW Sharp","file_url":"https://example.com/leads.csv","create_new_campaign":false}`;
+"Remove Sarah's playlist" → {"action":"remove_playlist","member_name":"Sarah"}`;
 
 async function parseIntent(userMessage) {
   const response = await client.messages.create({
