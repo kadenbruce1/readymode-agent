@@ -22,14 +22,25 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Click Leads in the sidebar
-    console.log('[uploadAndConfigure] Clicking Leads...');
-    await page.click('a[href="-AI Leads/pools"]');
-    await page.waitForTimeout(2000);
+    // Click Leads via JavaScript to bypass visibility issues
+    console.log('[uploadAndConfigure] Clicking Leads via JS...');
+    await page.evaluate(() => {
+      const links = document.querySelectorAll('a.dash_link');
+      for (const link of links) {
+        if (link.getAttribute('href') === '-AI Leads/pools') {
+          link.click();
+          break;
+        }
+      }
+    });
+    await page.waitForTimeout(3000);
 
     // Click Upload Leads
     console.log('[uploadAndConfigure] Clicking Upload Leads...');
-    await page.click('a.uploadlink');
+    await page.evaluate(() => {
+      const upload = document.querySelector('a.uploadlink');
+      if (upload) upload.click();
+    });
     await page.waitForTimeout(2000);
 
     // Click OK on popup if it appears
@@ -62,7 +73,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
       await page.waitForTimeout(2000);
 
-      // Try campaign list
       const campaignItem = page.locator(`#campaign_list li:has-text("${campaign_name}")`).first();
       const listVisible = await campaignItem.isVisible().catch(() => false);
 
@@ -72,7 +82,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
         await campaignItem.click();
         await page.waitForTimeout(500);
       } else {
-        // Try select dropdown
         const selectEl = await page.$('select[name="set[campaignId]"]');
         if (selectEl) {
           await page.selectOption('select[name="set[campaignId]"]', { label: campaign_name });
