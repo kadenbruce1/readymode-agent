@@ -44,22 +44,13 @@ app.message(async ({ message, client }) => {
     // Execute the action in Browserbase
     const result = await routeAction(action);
 
-    // Reply with result + screenshot
-    if (result.screenshot) {
-      await client.filesUploadV2({
-        channel_id: message.channel,
-        thread_ts: message.ts,
-        filename: 'readymode-result.png',
-        file: result.screenshot,
-        initial_comment: `✅ ${result.message}`,
-      });
-    } else {
-      await client.chat.postMessage({
-        channel: message.channel,
-        thread_ts: message.ts,
-        text: `✅ ${result.message}`,
-      });
-    }
+    // Reply with result
+    await client.chat.postMessage({
+      channel: message.channel,
+      thread_ts: message.ts,
+      text: `✅ ${result.message}`,
+    });
+
   } catch (err) {
     console.error('[Error]', err.message);
     await client.chat.postMessage({
