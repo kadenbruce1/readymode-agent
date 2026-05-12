@@ -13,6 +13,7 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   await downloadFile(file_url, tempPath);
 
   const { stagehand, page } = await getStagehand();
+  const cdpSession = await page.context().newCDPSession(page);
 
   try {
 
@@ -28,7 +29,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
-    // Click Leads link via JS
     console.log('[uploadAndConfigure] Clicking Leads...');
     await page.evaluate(() => {
       const links = document.querySelectorAll('a.dash_link');
@@ -41,7 +41,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    // Click Upload Leads via JS
     console.log('[uploadAndConfigure] Clicking Upload Leads...');
     await page.evaluate(() => {
       const upload = document.querySelector('a.uploadlink');
@@ -49,31 +48,32 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── GET THE IFRAME CONTEXT ────────────────────────────────────────────
+    // ── GET IFRAME AND INJECT FILE ────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Getting lead_csv_postwindow frame...');
     const uploadFrame = page.frame({ name: 'lead_csv_postwindow' });
     if (!uploadFrame) throw new Error('Could not find lead_csv_postwindow iframe');
-    console.log('[uploadAndConfigure] Got iframe context');
+    console.log('[uploadAndConfigure] Got iframe');
 
-    // ── INJECT FILE VIA CDP INTO IFRAME ───────────────────────────────────
+    // Use page-level CDP to find the file input inside the iframe
+    console.log('[uploadAndConfigure] Injecting file via CDP...');
+    const { root } = await cdpSession.send('DOM.getDocument', { depth: -1, pierce: true });
 
-    const cdpSession = await uploadFrame.createCDPSession();
-    const { root } = await cdpSession.send('DOM.getDocument');
+    // Search for #leadfileuploadbutton piercing through iframes
     const { nodeId } = await cdpSession.send('DOM.querySelector', {
       nodeId: root.nodeId,
       selector: '#leadfileuploadbutton',
     });
 
-    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton in iframe');
+    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton');
 
     await cdpSession.send('DOM.setFileInputFiles', {
       files: [tempPath],
       nodeId,
     });
-    console.log('[uploadAndConfigure] File injected via CDP into iframe');
+    console.log('[uploadAndConfigure] File injected via CDP');
 
-    // Call tmp.confirm_send inside the iframe context
+    // Call tmp.confirm_send inside the iframe
     console.log('[uploadAndConfigure] Calling tmp.confirm_send in iframe...');
     await uploadFrame.evaluate((filename) => {
       if (typeof tmp !== 'undefined' && tmp.confirm_send) {
@@ -194,13 +194,12 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1000);
     } catch {}
 
-    await cdpSession.detach().catch(() => {});
-
     return {
       message: `Leads uploaded to *${campaign_name}*${create_new_campaign ? ' (new campaign created)' : ''}. Phone groups assigned and call results configured.`,
     };
 
   } finally {
+    await cdpSession.detach().catch(() => {});
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
