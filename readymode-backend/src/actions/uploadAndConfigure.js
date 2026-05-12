@@ -73,14 +73,17 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
-    // Campaign select is in the main page DOM (not an iframe)
-    console.log('[uploadAndConfigure] Waiting for campaign dropdown to populate...');
-    await page.waitForFunction(() => {
+    // Wait flat 5s for the confirmation page JS to populate the campaign dropdown
+    console.log('[uploadAndConfigure] Waiting 5s for campaign dropdown to populate...');
+    await page.waitForTimeout(5000);
+
+    // Log what's in the dropdown for debugging
+    const dropdownState = await page.evaluate(() => {
       const s = document.querySelector('select[listof="campaigns"]');
-      return s && s.options.length > 1;
-    }, { timeout: 20000 });
-    await page.waitForTimeout(500);
-    console.log('[uploadAndConfigure] Campaign dropdown populated');
+      if (!s) return 'NOT FOUND';
+      return `options: ${s.options.length} | values: ${Array.from(s.options).map(o => o.text.trim()).join(' | ')}`;
+    });
+    console.log(`[uploadAndConfigure] Dropdown state: ${dropdownState}`);
 
     const campaignSelected = await page.evaluate((name) => {
       const select = document.querySelector('select[listof="campaigns"]');
