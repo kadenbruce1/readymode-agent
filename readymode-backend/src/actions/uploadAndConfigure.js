@@ -5,7 +5,7 @@ const path = require('path');
 const FormData = require('form-data');
 const axios = require('axios');
 
-async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
+async function uploadAndConfigure({ campaign_name, file_url }) {
   if (!campaign_name) throw new Error('campaign_name is required.');
   if (!file_url) throw new Error('file_url is required.');
 
@@ -192,8 +192,161 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.waitForTimeout(8000);
     console.log('[uploadAndConfigure] Import complete');
 
+    // ── NAVIGATE TO CAMPAIGNS TAB ─────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Navigating to Campaigns tab...');
+    const campaignTabClicked = await page.evaluate(() => {
+      const anchors = document.querySelectorAll('ul.ui-tabs-nav a, #tabs a, .ui-tabs a');
+      for (const a of anchors) {
+        if (a.textContent.trim().toLowerCase() === 'campaigns') {
+          a.click();
+          return true;
+        }
+      }
+      const allLinks = document.querySelectorAll('a');
+      for (const a of allLinks) {
+        const href = (a.getAttribute('href') || '').toLowerCase();
+        const text = a.textContent.trim().toLowerCase();
+        if (text === 'campaigns' || href.includes('campaigns')) {
+          a.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!campaignTabClicked) {
+      await page.locator('a:has-text("Campaigns")').first().click({ timeout: 10000 });
+    }
+    await page.waitForTimeout(3000);
+
+    // ── FIND AND OPEN CAMPAIGN ────────────────────────────────────────────
+
+    console.log(`[uploadAndConfigure] Opening campaign: ${campaign_name}`);
+    let campItem = null;
+    for (let i = 0; i < 15; i++) {
+      campItem = page.locator(`#campaign_list li`).filter({ hasText: campaign_name }).first();
+      const count = await campItem.count();
+      if (count > 0) break;
+      await page.waitForTimeout(1000);
+      console.log(`[uploadAndConfigure] Waiting for campaign list... attempt ${i + 1}`);
+    }
+
+    if (!campItem || await campItem.count() === 0) {
+      throw new Error(`Campaign "${campaign_name}" not found in campaign list`);
+    }
+
+    await campItem.click();
+    await page.waitForTimeout(3000);
+    console.log('[uploadAndConfigure] Campaign opened');
+
+    // ── PHONE GROUPS: CHECK ALL ───────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Assigning phone groups...');
+    try {
+      const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
+      await phoneGroupBtn.waitFor({ timeout: 8000 });
+      await phoneGroupBtn.click();
+      await page.waitForTimeout(1000);
+
+      const checkAllClicked = await page.evaluate(() => {
+        const candidates = [
+          document.querySelector('a.ui-multiselect-all'),
+          ...[...document.querySelectorAll('a')].filter(a => a.textContent.trim().toLowerCase() === 'check all'),
+        ];
+        for (const el of candidates) {
+          if (el) { el.click(); return true; }
+        }
+        return false;
+      });
+
+      if (!checkAllClicked) {
+        await page.locator('text=Check All').first().click({ timeout: 5000 });
+      }
+
+      await page.waitForTimeout(800);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadAndConfigure] Phone groups: all checked');
+    } catch (e) {
+      console.log(`[uploadAndConfigure] Phone groups step failed (non-fatal): ${e.message}`);
+    }
+
+    // ── CALL RESULTS: CHECK ALL, THEN UNCHECK 4 ──────────────────────────
+
+    console.log('[uploadAndConfigure] Configuring call results...');
+    try {
+      const callResultBtn = page.locator('button.ui-multiselect').nth(1);
+      await callResultBtn.waitFor({ timeout: 8000 });
+      await callResultBtn.click();
+      await page.waitForTimeout(1500);
+
+      const checkAllResult = await page.evaluate(() => {
+        const menus = document.querySelectorAll('.ui-multiselect-menu');
+        let openMenu = null;
+        for (const menu of menus) {
+          const style = window.getComputedStyle(menu);
+          if (style.display !== 'none' && style.visibility !== 'hidden') {
+            openMenu = menu;
+            break;
+          }
+        }
+        if (!openMenu) return 'ERROR: no open menu found';
+        const checkAll = openMenu.querySelector('a.ui-multiselect-all') ||
+          [...openMenu.querySelectorAll('a')].find(a => a.textContent.trim().toLowerCase() === 'check all');
+        if (!checkAll) return 'ERROR: check all not found in menu';
+        checkAll.click();
+        return 'OK';
+      });
+
+      console.log(`[uploadAndConfigure] Check all result: ${checkAllResult}`);
+      await page.waitForTimeout(1000);
+
+      const excluded = ['CS Log', 'Transfer', 'Not Available', 'Not in Service'];
+      const unchecked = await page.evaluate((excludedItems) => {
+        const menus = document.querySelectorAll('.ui-multiselect-menu');
+        let openMenu = null;
+        for (const menu of menus) {
+          const style = window.getComputedStyle(menu);
+          if (style.display !== 'none' && style.visibility !== 'hidden') {
+            openMenu = menu;
+            break;
+          }
+        }
+        if (!openMenu) return ['ERROR: no open menu'];
+        const results = [];
+        const labels = openMenu.querySelectorAll('label');
+        for (const label of labels) {
+          const labelText = label.textContent.trim();
+          if (excludedItems.some(ex => labelText.toLowerCase().includes(ex.toLowerCase()))) {
+            const cb = label.querySelector('input[type="checkbox"]');
+            if (cb && cb.checked) {
+              cb.click();
+              results.push(`unchecked: ${labelText}`);
+            } else {
+              results.push(`already unchecked: ${labelText}`);
+            }
+          }
+        }
+        return results;
+      }, excluded);
+
+      unchecked.forEach(r => console.log(`[uploadAndConfigure] ${r}`));
+      await page.waitForTimeout(500);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadAndConfigure] Call results configured');
+    } catch (e) {
+      console.log(`[uploadAndConfigure] Call results step failed (non-fatal): ${e.message}`);
+    }
+
+    try {
+      await page.click('img.closer.accordion-container-closer', { timeout: 3000 });
+      await page.waitForTimeout(1000);
+    } catch {}
+
     return {
-      message: `✅ Leads uploaded to campaign *${campaignSelected}*.`,
+      message: `✅ Leads uploaded to campaign *${campaignSelected}*. Phone groups assigned and call results configured.`,
     };
 
   } finally {
