@@ -276,7 +276,7 @@ async function uploadAndConfigure({ campaign_name, file_url }) {
 
     console.log('[uploadAndConfigure] Configuring call results...');
     try {
-      const callResultBtn = page.locator('button.ui-multiselect').nth(1);
+      const callResultBtn = page.locator('button.ui-multiselect').nth(2);
       await callResultBtn.waitFor({ timeout: 8000 });
       await callResultBtn.click();
       await page.waitForTimeout(1500);
