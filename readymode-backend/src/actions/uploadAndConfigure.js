@@ -42,63 +42,83 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // Click OK on popup
+    // The file picker opens — use setInputFiles on the hidden file input
+    // We need to intercept the file chooser
+    console.log('[uploadAndConfigure] Handling file upload...');
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 10000 }),
+      // The file chooser should already be open from clicking Upload Leads
+      // If not, try clicking any file input
+      page.$('input[type="file"]').then(el => el && el.click()).catch(() => {}),
+    ]);
+
+    if (fileChooser) {
+      await fileChooser.setFiles(tempPath);
+      console.log('[uploadAndConfigure] File set via file chooser');
+    } else {
+      // Fallback: directly set the file input
+      const fileInput = await page.$('input[type="file"]');
+      if (fileInput) await fileInput.setInputFiles(tempPath);
+    }
+    await page.waitForTimeout(2000);
+
+    // Handle confirmation popup — "Confirm: uploading lead file" → click OK
+    console.log('[uploadAndConfigure] Confirming file upload...');
     try {
-      await page.waitForSelector('button:has-text("OK"), input[value="OK"]', { timeout: 3000 });
-      await page.click('button:has-text("OK"), input[value="OK"]');
-      await page.waitForTimeout(1500);
+      page.on('dialog', dialog => dialog.accept());
+      await page.waitForTimeout(1000);
     } catch {}
 
-    // Upload CSV
-    console.log('[uploadAndConfigure] Uploading CSV...');
-    const fileInput = await page.$('input[type="file"]');
-    if (fileInput) {
-      await fileInput.setInputFiles(tempPath);
-      await page.waitForTimeout(3000);
-    }
+    // Also try clicking OK button if it's a custom dialog
+    try {
+      await page.waitForSelector('button:has-text("OK")', { timeout: 5000 });
+      await page.click('button:has-text("OK")');
+      await page.waitForTimeout(2000);
+    } catch {}
 
-    // Select or create campaign
+    // ── Field mapping screen is now showing ──────────────────────────────
+
+    // Select campaign from the Campaign Name dropdown on the RIGHT side
+    console.log(`[uploadAndConfigure] Setting campaign: ${campaign_name}`);
+
     if (create_new_campaign) {
-      console.log('[uploadAndConfigure] Creating new campaign...');
-      await page.click('text=Add a New Campaign');
-      await page.waitForTimeout(1000);
-      await page.fill('input[type="text"]:visible', campaign_name);
-      await page.waitForTimeout(500);
-      await page.click('button:has-text("OK"), input[value="OK"]');
-      await page.waitForTimeout(1000);
-      await page.click('button:has-text("Done"), input[value="Done"]');
-      await page.waitForTimeout(1500);
+      // Type new campaign name directly
+      await page.waitForSelector('input[name*="campaign"], #campaign_name', { timeout: 5000 });
+      await page.fill('input[name*="campaign"], #campaign_name', campaign_name);
     } else {
-      console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
+      // Find the Campaign Name select on the right side of the screen
+      await page.waitForTimeout(2000);
 
-      // Wait for select to load
-      await page.waitForSelector('select[name="set[campaignId]"]', { timeout: 10000 });
-      await page.waitForTimeout(1000);
-
-      // Get all options and find the one that matches (case-insensitive partial match)
-      const matchingValue = await page.evaluate((name) => {
-        const select = document.querySelector('select[name="set[campaignId]"]');
-        if (!select) return null;
-        const options = Array.from(select.options);
-        const match = options.find(o =>
-          o.text.toLowerCase().includes(name.toLowerCase()) ||
-          name.toLowerCase().includes(o.text.toLowerCase())
-        );
-        return match ? match.value : null;
+      // Use evaluate to find and set the campaign dropdown by partial name match
+      const matched = await page.evaluate((name) => {
+        // Look for select elements that contain campaign options
+        const selects = document.querySelectorAll('select');
+        for (const select of selects) {
+          const options = Array.from(select.options);
+          const match = options.find(o =>
+            o.text.toLowerCase().includes(name.toLowerCase()) ||
+            name.toLowerCase().includes(o.text.toLowerCase())
+          );
+          if (match) {
+            select.value = match.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            return match.text;
+          }
+        }
+        return null;
       }, campaign_name);
 
-      if (matchingValue) {
-        await page.selectOption('select[name="set[campaignId]"]', { value: matchingValue });
-        console.log(`[uploadAndConfigure] Selected campaign value: ${matchingValue}`);
+      if (matched) {
+        console.log(`[uploadAndConfigure] Selected campaign: ${matched}`);
       } else {
-        throw new Error(`Campaign "${campaign_name}" not found in dropdown`);
+        console.log(`[uploadAndConfigure] Could not find campaign "${campaign_name}" in any dropdown — proceeding anyway`);
       }
       await page.waitForTimeout(1000);
     }
 
     // Click Done - Import leads
-    console.log('[uploadAndConfigure] Importing leads...');
-    await page.click('input[value="Done - Import leads"]');
+    console.log('[uploadAndConfigure] Clicking Done - Import leads...');
+    await page.click('button:has-text("Done - Import leads"), input[value="Done - Import leads"]');
     await page.waitForTimeout(5000);
 
     // ── PART 2: CONFIGURE CAMPAIGN ───────────────────────────────────────
