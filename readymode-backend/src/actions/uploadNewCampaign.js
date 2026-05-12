@@ -196,8 +196,148 @@ async function uploadNewCampaign({ campaign_name, file_url }) {
     await page.waitForTimeout(8000);
     console.log('[uploadNewCampaign] Import complete');
 
+    // ── NAVIGATE TO CAMPAIGNS TAB ─────────────────────────────────────────
+
+    console.log('[uploadNewCampaign] Navigating to Campaigns tab...');
+    const campaignTabClicked = await page.evaluate(() => {
+      const anchors = document.querySelectorAll('ul.ui-tabs-nav a, #tabs a, .ui-tabs a');
+      for (const a of anchors) {
+        if (a.textContent.trim().toLowerCase() === 'campaigns') {
+          a.click();
+          return true;
+        }
+      }
+      const allLinks = document.querySelectorAll('a');
+      for (const a of allLinks) {
+        const href = (a.getAttribute('href') || '').toLowerCase();
+        const text = a.textContent.trim().toLowerCase();
+        if (text === 'campaigns' || href.includes('campaigns')) {
+          a.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!campaignTabClicked) {
+      await page.locator('a:has-text("Campaigns")').first().click({ timeout: 10000 });
+    }
+    await page.waitForTimeout(3000);
+
+    // ── FIND AND OPEN NEW CAMPAIGN ────────────────────────────────────────
+
+    console.log(`[uploadNewCampaign] Opening campaign: ${campaign_name}`);
+    let campItem = null;
+    for (let i = 0; i < 15; i++) {
+      campItem = page.locator(`#campaign_list li`).filter({ hasText: campaign_name }).first();
+      const count = await campItem.count();
+      if (count > 0) break;
+      await page.waitForTimeout(1000);
+      console.log(`[uploadNewCampaign] Waiting for campaign list... attempt ${i + 1}`);
+    }
+
+    if (!campItem || await campItem.count() === 0) {
+      throw new Error(`Campaign "${campaign_name}" not found in campaign list`);
+    }
+
+    await campItem.click();
+    await page.waitForTimeout(3000);
+    console.log('[uploadNewCampaign] Campaign opened');
+
+    // ── PHONE GROUPS: CHECK ALL ───────────────────────────────────────────
+
+    console.log('[uploadNewCampaign] Assigning phone groups...');
+    try {
+      const phoneGroupBtn = page.locator('button.ui-multiselect').nth(0);
+      await phoneGroupBtn.waitFor({ timeout: 8000 });
+      await phoneGroupBtn.click();
+      await page.waitForTimeout(1000);
+
+      const checkAllClicked = await page.evaluate(() => {
+        const candidates = [
+          document.querySelector('a.ui-multiselect-all'),
+          ...[...document.querySelectorAll('a')].filter(a => a.textContent.trim().toLowerCase() === 'check all'),
+        ];
+        for (const el of candidates) {
+          if (el) { el.click(); return true; }
+        }
+        return false;
+      });
+
+      if (!checkAllClicked) {
+        await page.locator('text=Check All').first().click({ timeout: 5000 });
+      }
+
+      await page.waitForTimeout(800);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadNewCampaign] Phone groups: all checked');
+    } catch (e) {
+      console.log(`[uploadNewCampaign] Phone groups step failed (non-fatal): ${e.message}`);
+    }
+
+    // ── CALL RESULTS: CHECK ALL, THEN UNCHECK 4 ──────────────────────────
+
+    console.log('[uploadNewCampaign] Configuring call results...');
+    try {
+      const callResultBtn = page.locator('button.ui-multiselect').nth(1);
+      await callResultBtn.waitFor({ timeout: 8000 });
+      await callResultBtn.click();
+      await page.waitForTimeout(1000);
+
+      const checkAllClicked = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('a.ui-multiselect-all, a')];
+        const target = all.find(a =>
+          a.classList.contains('ui-multiselect-all') ||
+          a.textContent.trim().toLowerCase() === 'check all'
+        );
+        if (target) { target.click(); return true; }
+        return false;
+      });
+
+      if (!checkAllClicked) {
+        await page.locator('text=Check All').first().click({ timeout: 5000 });
+      }
+
+      await page.waitForTimeout(800);
+
+      const excluded = ['CS Log', 'Transfer', 'Not Available', 'Not in Service'];
+      for (const item of excluded) {
+        try {
+          const label = page.locator(`.ui-multiselect-menu label`).filter({ hasText: item }).first();
+          const labelCount = await label.count();
+          if (labelCount > 0) {
+            const cb = label.locator('input[type="checkbox"]');
+            const isChecked = await cb.isChecked().catch(() => false);
+            if (isChecked) {
+              await label.click();
+              await page.waitForTimeout(300);
+              console.log(`[uploadNewCampaign] Unchecked: ${item}`);
+            } else {
+              console.log(`[uploadNewCampaign] "${item}" already unchecked`);
+            }
+          }
+        } catch (e) {
+          console.log(`[uploadNewCampaign] Could not uncheck "${item}": ${e.message}`);
+        }
+      }
+
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+      console.log('[uploadNewCampaign] Call results configured');
+    } catch (e) {
+      console.log(`[uploadNewCampaign] Call results step failed (non-fatal): ${e.message}`);
+    }
+
+    // ── CLOSE ACCORDION ───────────────────────────────────────────────────
+
+    try {
+      await page.click('img.closer.accordion-container-closer', { timeout: 3000 });
+      await page.waitForTimeout(1000);
+    } catch {}
+
     return {
-      message: `✅ New campaign *${campaign_name}* created and leads uploaded.`,
+      message: `✅ New campaign *${campaign_name}* created, leads uploaded, phone groups assigned, and call results configured.`,
     };
 
   } finally {
