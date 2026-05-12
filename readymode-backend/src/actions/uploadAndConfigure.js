@@ -73,35 +73,28 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
 
     console.log(`[uploadAndConfigure] Selecting campaign: ${campaign_name}`);
 
-    // Log all select options for debugging
-    const allSelectOptions = await page.evaluate(() => {
-      const selects = document.querySelectorAll('select');
-      const result = [];
-      selects.forEach((s, i) => {
-        const opts = Array.from(s.options).map(o => o.text.trim()).filter(Boolean);
-        if (opts.length > 0) result.push(`select[${i}] id="${s.id}": ${opts.join(' | ')}`);
-      });
-      return result;
-    });
-    allSelectOptions.forEach(o => console.log(`[uploadAndConfigure] ${o}`));
-
     // Wait for campaign dropdown to load AND have options populated
     console.log('[uploadAndConfigure] Waiting for campaign dropdown to populate...');
     await page.waitForFunction(() => {
-      const select = document.querySelector('select[listof="campaigns"]');
+      const select = document.querySelector('#xcont-6 select[listof="campaigns"], #leadsendform select[listof="campaigns"], form[tagged="1"] select[listof="campaigns"]');
       return select && select.options.length > 1;
     }, { timeout: 20000 });
     await page.waitForTimeout(500);
     console.log('[uploadAndConfigure] Campaign dropdown populated');
 
     const campaignSelected = await page.evaluate((name) => {
-      // Target the campaign dropdown specifically by its listof attribute
-      const select = document.querySelector('select[listof="campaigns"]');
-      if (!select) return null;
+      // Scope to the confirmation form only — not the hotbar session statebox
+      const container = document.querySelector('#xcont-6') ||
+                        document.querySelector('#leadsendform') ||
+                        document.querySelector('form[tagged="1"]') ||
+                        document;
+      const select = container.querySelector('select[listof="campaigns"]');
+      if (!select) return 'ERROR: select[listof="campaigns"] not found in form container';
       const options = Array.from(select.options);
+      console.log('Available campaigns:', options.map(o => `${o.value}:${o.text}`).join(', '));
       const match = options.find(o =>
-        o.text.toLowerCase().includes(name.toLowerCase()) ||
-        name.toLowerCase().includes(o.text.toLowerCase())
+        o.text.trim().toLowerCase().includes(name.toLowerCase()) ||
+        name.toLowerCase().includes(o.text.trim().toLowerCase())
       );
       if (match) {
         select.value = match.value;
@@ -109,14 +102,13 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
         if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
           tmp.CCS_Leads_CheckCampaign(select);
         }
-        return match.text;
+        return match.text.trim();
       }
-      // Log available options if no match
       return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
     }, campaign_name);
 
-    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:')) {
-      throw new Error(`Campaign "${campaign_name}" not found. Available: ${campaignSelected}`);
+    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
+      throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
     }
     console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
     await page.waitForTimeout(500);
