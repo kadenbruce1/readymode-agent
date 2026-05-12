@@ -2,6 +2,7 @@ const { getStagehand } = require('../stagehand');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const FormData = require('form-data');
 const axios = require('axios');
 
 async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
@@ -27,6 +28,12 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
     await page.waitForTimeout(2000);
 
+    // ── GET SESSION COOKIES ───────────────────────────────────────────────
+
+    const cookies = await page.context().cookies();
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    console.log(`[uploadAndConfigure] Got ${cookies.length} cookies`);
+
     // ── OPEN LEAD MANAGEMENT PANEL ────────────────────────────────────────
 
     console.log('[uploadAndConfigure] Opening Lead Management panel...');
@@ -43,12 +50,30 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── USE STAGEHAND TO CLICK UPLOAD LEADS AND HANDLE FILE ──────────────
+    // ── INTERCEPT THE UPLOAD REQUEST ─────────────────────────────────────
+    // Let a real fileChooser trigger happen to capture the real upload URL
+    // and form fields, then fulfill it normally but also replay with our file.
 
-    console.log('[uploadAndConfigure] Using Stagehand to trigger upload...');
+    let capturedUploadUrl = null;
+    let capturedPostData = null;
+    let capturedHeaders = null;
 
-    // Use the fileChooser intercept + setFiles — this is the most reliable
-    // way to handle file inputs in Playwright/Stagehand
+    await page.route('**/*', async (route) => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        const url = request.url();
+        console.log(`[uploadAndConfigure] POST intercepted: ${url}`);
+        capturedUploadUrl = url;
+        capturedHeaders = request.headers();
+        capturedPostData = request.postDataBuffer();
+        await route.continue();
+      } else {
+        await route.continue();
+      }
+    });
+
+    // Trigger file chooser with our actual file
+    console.log('[uploadAndConfigure] Triggering file upload...');
     const [fileChooser] = await Promise.all([
       page.waitForEvent('filechooser', { timeout: 15000 }),
       page.locator('text=Upload Leads').first().click(),
@@ -57,42 +82,75 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     await fileChooser.setFiles(tempPath);
     console.log('[uploadAndConfigure] File set via fileChooser');
 
-    // Now explicitly submit the upload form
-    await page.waitForTimeout(1000);
-    await page.evaluate(() => {
-      const form = document.querySelector('#leadsendform');
-      if (form) {
-        if (form.requestSubmit) form.requestSubmit();
-        else form.submit();
-      }
-    });
-    console.log('[uploadAndConfigure] Form submitted');
+    // Wait to see if any POST fires automatically after file selection
+    await page.waitForTimeout(3000);
+    console.log(`[uploadAndConfigure] Auto-POST captured: ${capturedUploadUrl || 'none'}`);
 
-    // Wait for iframe to load the response
-    await page.waitForTimeout(5000);
+    // If no auto-POST, submit the form manually
+    if (!capturedUploadUrl) {
+      console.log('[uploadAndConfigure] No auto-POST — submitting form manually...');
+      await page.evaluate(() => {
+        const form = document.querySelector('#leadsendform');
+        if (form) {
+          if (form.requestSubmit) form.requestSubmit();
+          else form.submit();
+        }
+      });
+      await page.waitForTimeout(3000);
+      console.log(`[uploadAndConfigure] POST after manual submit: ${capturedUploadUrl || 'still none'}`);
+    }
 
-    // Check what loaded in the lead_csv_postwindow iframe
-    const iframeContent = await page.evaluate(() => {
-      const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
-      if (!iframe) return 'ERROR: iframe not found';
+    // Remove route interceptor
+    await page.unroute('**/*');
+
+    // ── IF WE CAPTURED THE URL, REPLAY WITH AXIOS ────────────────────────
+
+    if (capturedUploadUrl) {
+      console.log(`[uploadAndConfigure] Replaying upload to: ${capturedUploadUrl}`);
+      const form = new FormData();
+      form.append('leadfile', fs.createReadStream(tempPath), {
+        filename: path.basename(tempPath),
+        contentType: 'text/csv',
+      });
+
+      // Add any non-file form fields from the captured post data if possible
       try {
-        const doc = iframe.contentDocument || iframe.contentWindow?.document;
-        if (!doc) return 'ERROR: cannot access iframe document';
-        return doc.body?.innerHTML?.substring(0, 500) || 'EMPTY';
+        const replayResponse = await axios.post(capturedUploadUrl, form, {
+          headers: {
+            ...form.getHeaders(),
+            'Cookie': cookieString,
+            'Referer': process.env.READYMODE_URL,
+            'Origin': process.env.READYMODE_URL,
+          },
+          maxRedirects: 5,
+        });
+        console.log(`[uploadAndConfigure] Replay response (${replayResponse.status}): ${String(replayResponse.data).substring(0, 300)}`);
       } catch (e) {
-        return `ERROR: ${e.message}`;
+        console.log(`[uploadAndConfigure] Replay failed: ${e.message}`);
       }
-    });
-    console.log(`[uploadAndConfigure] Iframe content: ${iframeContent}`);
+    }
 
     // ── WAIT FOR CAMPAIGN DROPDOWN TO POPULATE ────────────────────────────
 
     console.log('[uploadAndConfigure] Waiting for confirmation screen...');
-    await page.waitForFunction(() => {
-      const s = document.querySelector('select[listof="campaigns"]');
-      return s && s.options.length > 1;
-    }, { timeout: 60000 });
-    console.log('[uploadAndConfigure] Confirmation screen loaded');
+    try {
+      await page.waitForFunction(() => {
+        const s = document.querySelector('select[listof="campaigns"]');
+        return s && s.options.length > 1;
+      }, { timeout: 30000 });
+      console.log('[uploadAndConfigure] Confirmation screen loaded');
+    } catch (e) {
+      // Log iframe state for debugging
+      const iframeContent = await page.evaluate(() => {
+        const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
+        if (!iframe) return 'no iframe';
+        try {
+          return iframe.contentDocument?.body?.innerHTML?.substring(0, 300) || 'empty';
+        } catch { return 'cross-origin blocked'; }
+      });
+      console.log(`[uploadAndConfigure] Iframe content: ${iframeContent}`);
+      throw new Error(`Confirmation screen never loaded: ${e.message}`);
+    }
     await page.waitForTimeout(500);
 
     // ── SELECT CAMPAIGN ───────────────────────────────────────────────────
