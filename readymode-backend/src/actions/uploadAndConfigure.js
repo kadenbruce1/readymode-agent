@@ -48,48 +48,54 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(2000);
 
-    // ── GET IFRAME AND INJECT FILE ────────────────────────────────────────
+    // ── INJECT FILE VIA CDP ───────────────────────────────────────────────
 
-    console.log('[uploadAndConfigure] Getting lead_csv_postwindow frame...');
+    console.log('[uploadAndConfigure] Getting iframe...');
     const uploadFrame = page.frame({ name: 'lead_csv_postwindow' });
     if (!uploadFrame) throw new Error('Could not find lead_csv_postwindow iframe');
-    console.log('[uploadAndConfigure] Got iframe');
 
-    // Inject file via CDP piercing through iframes
     console.log('[uploadAndConfigure] Injecting file via CDP...');
     const { root } = await cdpSession.send('DOM.getDocument', { depth: -1, pierce: true });
     const { nodeId } = await cdpSession.send('DOM.querySelector', {
       nodeId: root.nodeId,
       selector: '#leadfileuploadbutton',
     });
-
     if (!nodeId) throw new Error('Could not find #leadfileuploadbutton');
 
-    await cdpSession.send('DOM.setFileInputFiles', {
-      files: [tempPath],
-      nodeId,
-    });
-    console.log('[uploadAndConfigure] File injected via CDP');
+    await cdpSession.send('DOM.setFileInputFiles', { files: [tempPath], nodeId });
+    console.log('[uploadAndConfigure] File injected');
 
-    // Call tmp.confirm_send — this triggers navigation so ignore context error
-    console.log('[uploadAndConfigure] Calling tmp.confirm_send...');
+    // Call confirm_send inside iframe — this triggers navigation
+    console.log('[uploadAndConfigure] Calling confirm_send...');
     await uploadFrame.evaluate((filename) => {
       if (typeof tmp !== 'undefined' && tmp.confirm_send) {
         tmp.confirm_send(filename);
       }
-    }, path.basename(tempPath)).catch(e => {
-      console.log('[uploadAndConfigure] Expected navigation error:', e.message);
-    });
+    }, path.basename(tempPath)).catch(() => {});
 
-    // Wait for iframe to reload with field mapping screen
-    console.log('[uploadAndConfigure] Waiting for field mapping screen to load...');
-    await page.waitForTimeout(4000);
+    // ── WAIT FOR FIELD MAPPING USING CDP ─────────────────────────────────
 
-    // Get fresh frame reference after navigation
-    const fieldFrame = page.frame({ name: 'lead_csv_postwindow' });
-    if (!fieldFrame) throw new Error('Could not find field mapping frame after navigation');
+    // Poll for the Done button appearing anywhere in the page including iframes
+    console.log('[uploadAndConfigure] Polling for field mapping screen...');
+    let fieldFrame = null;
+    for (let i = 0; i < 30; i++) {
+      await page.waitForTimeout(1000);
+      // Check all frames for the Done button
+      for (const frame of page.frames()) {
+        try {
+          const btn = await frame.$('input[value="Done - Import leads"]');
+          if (btn) {
+            fieldFrame = frame;
+            console.log(`[uploadAndConfigure] Field mapping found in frame: ${frame.name()}`);
+            break;
+          }
+        } catch {}
+      }
+      if (fieldFrame) break;
+      console.log(`[uploadAndConfigure] Polling... attempt ${i + 1}`);
+    }
 
-    await fieldFrame.waitForSelector('input[value="Done - Import leads"]', { timeout: 20000 });
+    if (!fieldFrame) throw new Error('Field mapping screen never appeared');
     console.log('[uploadAndConfigure] Field mapping screen loaded!');
 
     // ── SELECT CAMPAIGN ──────────────────────────────────────────────────
@@ -105,23 +111,8 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
       await page.waitForTimeout(1500);
     } else {
       const matched = await fieldFrame.evaluate((name) => {
-        const campaignSelect = document.querySelector('select[name="set[campaignId]"], select[listof="campaigns"]');
-        if (campaignSelect) {
-          const options = Array.from(campaignSelect.options);
-          const match = options.find(o =>
-            o.text.toLowerCase().includes(name.toLowerCase()) ||
-            name.toLowerCase().includes(o.text.toLowerCase())
-          );
-          if (match) {
-            campaignSelect.value = match.value;
-            campaignSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
-              tmp.CCS_Leads_CheckCampaign(campaignSelect);
-            }
-            return match.text;
-          }
-        }
-        for (const select of document.querySelectorAll('select')) {
+        const selects = document.querySelectorAll('select');
+        for (const select of selects) {
           const options = Array.from(select.options);
           const match = options.find(o =>
             o.text.toLowerCase().includes(name.toLowerCase()) ||
@@ -130,12 +121,14 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
           if (match) {
             select.value = match.value;
             select.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
+              tmp.CCS_Leads_CheckCampaign(select);
+            }
             return match.text;
           }
         }
         return null;
       }, campaign_name);
-
       console.log(`[uploadAndConfigure] Campaign matched: ${matched || 'not found'}`);
       await page.waitForTimeout(1000);
     }
