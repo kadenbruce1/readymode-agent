@@ -104,34 +104,6 @@ async function uploadAndConfigure({ campaign_name, channel_name, file_url }) {
     if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
       throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
     }
-
-    const campaignSelected = await confirmFrame.evaluate((name) => {
-      const container = document.querySelector('#xcont-6') ||
-                        document.querySelector('#leadsendform') ||
-                        document.querySelector('form[tagged="1"]') ||
-                        document;
-      const select = container.querySelector('select[listof="campaigns"]');
-      if (!select) return 'ERROR: select[listof="campaigns"] not found in form container';
-      const options = Array.from(select.options);
-      console.log('Available campaigns:', options.map(o => `${o.value}:${o.text}`).join(', '));
-      const match = options.find(o =>
-        o.text.trim().toLowerCase().includes(name.toLowerCase()) ||
-        name.toLowerCase().includes(o.text.trim().toLowerCase())
-      );
-      if (match) {
-        select.value = match.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        if (typeof tmp !== 'undefined' && tmp.CCS_Leads_CheckCampaign) {
-          tmp.CCS_Leads_CheckCampaign(select);
-        }
-        return match.text.trim();
-      }
-      return 'NO_MATCH:' + options.map(o => o.text.trim()).filter(Boolean).join(' | ');
-    }, campaign_name);
-
-    if (!campaignSelected || campaignSelected.startsWith('NO_MATCH:') || campaignSelected.startsWith('ERROR:')) {
-      throw new Error(`Campaign "${campaign_name}" not found. Result: ${campaignSelected}`);
-    }
     console.log(`[uploadAndConfigure] Campaign selected: ${campaignSelected}`);
     await page.waitForTimeout(500);
 
