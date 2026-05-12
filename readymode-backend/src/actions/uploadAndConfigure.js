@@ -4,6 +4,8 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const FormData = require('form-data');
+const axios = require('axios');
 
 async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign = false }) {
   if (!campaign_name) throw new Error('campaign_name is required.');
@@ -13,23 +15,57 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
   await downloadFile(file_url, tempPath);
 
   const { stagehand, page } = await getStagehand();
-  const cdpSession = await page.context().newCDPSession(page);
 
   try {
 
-    // Register dialog handler FIRST
-    page.on('dialog', async dialog => {
-      console.log(`[uploadAndConfigure] Dialog accepted: ${dialog.message()}`);
-      await dialog.accept();
+    // ── GET SESSION COOKIES ───────────────────────────────────────────────
+
+    console.log('[uploadAndConfigure] Getting session cookies...');
+    await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1000);
+
+    const cookies = await page.context().cookies();
+    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    console.log(`[uploadAndConfigure] Got ${cookies.length} cookies`);
+
+    const baseUrl = process.env.READYMODE_URL;
+
+    // ── POST CSV DIRECTLY TO UPLOAD API ──────────────────────────────────
+
+    console.log('[uploadAndConfigure] Uploading CSV via API...');
+    const form = new FormData();
+    form.append('fromContainerId', 'xcont-5');
+    form.append('leadfile', fs.createReadStream(tempPath), {
+      filename: path.basename(tempPath),
+      contentType: 'text/csv',
     });
 
-    // ── NAVIGATE ─────────────────────────────────────────────────────────
+    const uploadResponse = await axios.post(
+      `${baseUrl}/AI%20Leads/upload/index.php`,
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'Cookie': cookieString,
+          'Referer': baseUrl,
+          'Origin': baseUrl,
+        },
+        maxRedirects: 5,
+      }
+    );
 
-    console.log('[uploadAndConfigure] Going to dashboard...');
-    await page.goto(process.env.READYMODE_URL, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(2000);
+    // Extract process ID from response
+    const processMatch = uploadResponse.data.match(/AI Leads\/process\/(\d+)/);
+    if (!processMatch) throw new Error('Could not find process ID in upload response');
 
-    console.log('[uploadAndConfigure] Clicking Leads...');
+    const processId = processMatch[1];
+    console.log(`[uploadAndConfigure] Process ID: ${processId}`);
+
+    // ── NAVIGATE TO FIELD MAPPING PAGE ───────────────────────────────────
+
+    console.log('[uploadAndConfigure] Navigating to field mapping page...');
+
+    // Click Leads to load the Leads section first
     await page.evaluate(() => {
       const links = document.querySelectorAll('a.dash_link');
       for (const link of links) {
@@ -41,62 +77,38 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     });
     await page.waitForTimeout(3000);
 
-    console.log('[uploadAndConfigure] Clicking Upload Leads...');
-    await page.evaluate(() => {
-      const upload = document.querySelector('a.uploadlink');
-      if (upload) upload.click();
-    });
-    await page.waitForTimeout(2000);
-
-    // ── INJECT FILE VIA CDP ───────────────────────────────────────────────
-
-    console.log('[uploadAndConfigure] Getting iframe...');
-    const uploadFrame = page.frame({ name: 'lead_csv_postwindow' });
-    if (!uploadFrame) throw new Error('Could not find lead_csv_postwindow iframe');
-
-    console.log('[uploadAndConfigure] Injecting file via CDP...');
-    const { root } = await cdpSession.send('DOM.getDocument', { depth: -1, pierce: true });
-    const { nodeId } = await cdpSession.send('DOM.querySelector', {
-      nodeId: root.nodeId,
-      selector: '#leadfileuploadbutton',
-    });
-    if (!nodeId) throw new Error('Could not find #leadfileuploadbutton');
-
-    await cdpSession.send('DOM.setFileInputFiles', { files: [tempPath], nodeId });
-    console.log('[uploadAndConfigure] File injected');
-
-    // Call confirm_send inside iframe — this triggers navigation
-    console.log('[uploadAndConfigure] Calling confirm_send...');
-    await uploadFrame.evaluate((filename) => {
-      if (typeof tmp !== 'undefined' && tmp.confirm_send) {
-        tmp.confirm_send(filename);
+    // Now navigate to the process page inside the leads section
+    await page.evaluate((pid) => {
+      // Find the lead_csv_postwindow iframe and navigate it
+      const iframe = document.querySelector('iframe[name="lead_csv_postwindow"]');
+      if (iframe) {
+        iframe.src = `/AI%20Leads/process/${pid}`;
       }
-    }, path.basename(tempPath)).catch(() => {});
+    }, processId);
+    await page.waitForTimeout(3000);
 
-    // ── WAIT FOR FIELD MAPPING USING CDP ─────────────────────────────────
+    // ── WAIT FOR FIELD MAPPING SCREEN ────────────────────────────────────
 
-    // Poll for the Done button appearing anywhere in the page including iframes
-    console.log('[uploadAndConfigure] Polling for field mapping screen...');
+    console.log('[uploadAndConfigure] Waiting for field mapping screen...');
     let fieldFrame = null;
-    for (let i = 0; i < 30; i++) {
-      await page.waitForTimeout(1000);
-      // Check all frames for the Done button
+    for (let i = 0; i < 20; i++) {
       for (const frame of page.frames()) {
         try {
           const btn = await frame.$('input[value="Done - Import leads"]');
           if (btn) {
             fieldFrame = frame;
-            console.log(`[uploadAndConfigure] Field mapping found in frame: ${frame.name()}`);
+            console.log(`[uploadAndConfigure] Found field mapping in frame: ${frame.name()}`);
             break;
           }
         } catch {}
       }
       if (fieldFrame) break;
-      console.log(`[uploadAndConfigure] Polling... attempt ${i + 1}`);
+      await page.waitForTimeout(1000);
+      console.log(`[uploadAndConfigure] Polling... ${i + 1}`);
     }
 
     if (!fieldFrame) throw new Error('Field mapping screen never appeared');
-    console.log('[uploadAndConfigure] Field mapping screen loaded!');
+    console.log('[uploadAndConfigure] Field mapping loaded!');
 
     // ── SELECT CAMPAIGN ──────────────────────────────────────────────────
 
@@ -195,7 +207,6 @@ async function uploadAndConfigure({ campaign_name, file_url, create_new_campaign
     };
 
   } finally {
-    await cdpSession.detach().catch(() => {});
     await stagehand.close();
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
